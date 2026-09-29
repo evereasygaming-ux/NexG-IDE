@@ -42,12 +42,22 @@ OpenCode
 | Gradle (system) | ✅ OK | `9.8.0` (Kotlin 2.4.10, Groovy 4.0.33) |
 | Kotlin compiler | ✅ present | `kotlinc` in PATH |
 | adb | ✅ present | Termux `android-tools` |
-| Android SDK | ✅ found | `~/android-sdk` (path abhi set nahi) |
-| `ANDROID_HOME` / `ANDROID_SDK_ROOT` | ❌ EMPTY | set karna hoga |
+| git | ✅ OK | `2.53.0` |
+| Android SDK | ✅ found | `/data/data/com.termux/files/home/android-sdk` |
+| SDK platforms | ✅ OK | `android-34`, `android-36` (android-36 = target for Android 16) |
+| SDK build-tools | ✅ OK | `34.0.0`, `35.0.0`, `36.0.0` (+ `34.0.0-termux-shim`) |
+| `ANDROID_HOME` / `ANDROID_SDK_ROOT` | ❌ EMPTY | `local.properties` mein `sdk.dir` dena hoga |
 | proot-distro | ⚠️ UNVERIFIED | `proot-distro list` ne kuch return nahi kiya |
-| OpenCode | ⚠️ UNVERIFIED | `~/.opencode` folder maujood hai, binary/server verify nahi kiya |
+| OpenCode | ⚠️ UNVERIFIED | `.opencode` folder maujood hai, binary/server verify nahi kiya |
 
-**Environment home:** `/root` (= `/data/data/com.termux/files/home`)
+**⚠️ IMPORTANT PATH FACT (galti ka khatra):**
+- Is agent session ka `$HOME` = `/root` — yeh **Termux home NAHI** hai.
+- Asli Termux home = `/data/data/com.termux/files/home`
+- `~/android-sdk`, `~/.opencode`, `~/.gitconfig` sab asli Termux home mein hain.
+- `/sdcard` aur Termux home **same filesystem** par bind hain (same total blocks) — storage shared hai.
+
+**Git identity (asli Termux global config):** `Project Jessy <project-jessy@localhost>`
+→ Naye repo ka local identity set kiya: `NexG IDE <nexg-ide@localhost>` (badal sakte hain).
 
 ---
 
@@ -148,13 +158,50 @@ ls: cannot access '/root/PROJECT': No such file or directory
 
 ---
 
+### Entry 002 — 2026-09-29 — Git repository setup
+
+**Kya kiya:**
+- `.gitignore` banaya (Gradle / Android / IDE / **secrets** patterns).
+- `.gitattributes` banaya (LF normalization, binary markers) — sdcard FAT-family hai, isliye zaroori.
+- `git init -b main` — branch `main`.
+- `core.filemode=false` + `core.symlinks=false` set kiya (sdcard exec bit preserve nahi karta).
+- Repo-local identity: `NexG IDE <nexg-ide@localhost>`.
+- `safe.directory` add kiya — **dono** paths, kyunki git resolved path use karta hai:
+  - `/mnt/sdcard/Documents/NexG IDE` (yeh resolved path hai)
+  - `/sdcard/Documents/NexG IDE`
+  - Termux ki asli global config `/data/data/com.termux/files/home/.gitconfig` mein bhi add kiya.
+- First commit: `22a5593` — 3 files, 282 insertions.
+
+**Trap jo pada (dobara na ho):**
+`git config` likhte waqt `fatal: not in a git directory` aaya — yeh asal mein
+*ownership check* ki galti thi, config ki nahi. Fix: `safe.directory` mein
+**symlink-resolved path** dalo, raw path nahi.
+
+**Verified:**
+```
+$ git rev-parse --git-dir
+.git
+$ git log --stat --oneline
+22a5593 chore: init NexG IDE repository with project memory
+ .gitattributes |  40 +++
+ .gitignore     |  60 +++
+ OPENCODE.MD    | 182 +++
+```
+
+**Kya nahi kiya:** koi build nahi chalaya.
+
+---
+
 ## 8. OPEN QUESTIONS / BLOCKERS
 
 1. ❓ Package name kya rakhein? (`com.nexg.ide`? `com.project.nexg`?)
-2. ❓ `ANDROID_HOME` kahan set karna hai — Termux mein ya project `local.properties` mein?
+2. ✅ ~~`ANDROID_HOME` kahan set karna hai?~~ → `local.properties` mein `sdk.dir` dena hai
+   (resolved: `/data/data/com.termux/files/home/android-sdk`). Platforms `android-34`, `android-36` available.
 3. ❓ proot-distro actually installed hai ya nahi (verify nahi hua)?
 4. ❓ OpenCode server mode use hoga ya terminal-launch mode? (spec server/API prefer karta hai)
-5. ⚠️ Android SDK ka `compileSdk`/`build-tools` versions available hain ya nahi — verify nahi hua.
+5. ✅ ~~Android SDK versions available hain ya nahi?~~ → **HAAN**: platforms `android-34`, `android-36`;
+   build-tools `34.0.0`, `35.0.0`, `36.0.0`. `compileSdk 36` / `targetSdk 36` use kar sakte hain.
+6. ❓ Git identity theek hai? (`NexG IDE <nexg-ide@localhost>` — placeholder jaisa lag raha hai)
 
 ---
 
@@ -178,5 +225,6 @@ ls: cannot access '/root/PROJECT': No such file or directory
 
 ---
 
-**Last updated:** 2026-09-29 06:20
+**Last updated:** 2026-09-29 06:32
+**Git:** repo initialised, branch `main`, pehla commit `22a5593`.
 **Next action:** User se Phase 1 start karne ki permission + package name confirm karna.
