@@ -1,0 +1,40 @@
+# Normalize text handling across platforms.
+# NOTE: /sdcard is a FAT-family mount -> file modes (exec bit) are NOT
+# preserved, therefore core.filemode=false is set in repo config.
+
+* text=auto
+
+# Source
+*.kt        text
+*.kts       text
+*.java      text
+*.xml       text
+*.json      text
+*.yml       text
+*.yaml      text
+*.md        text
+*.txt       text
+*.pro       text
+*.cfg       text
+*.properties text
+*.sh        text eol=lf
+gradlew     text eol=lf
+
+# Gradle wrapper binary
+gradle/wrapper/gradle-wrapper.jar binary
+
+# Binary assets
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.webp  binary
+*.gif   binary
+*.ttf   binary
+*.otf   binary
+*.so    binary
+*.jar   binary
+*.apk   binary
+*.aab   binary
+*.zip   binary
+*.keystore binary
+*.jks   binary

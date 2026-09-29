@@ -1,0 +1,60 @@
+# ---- Gradle ----
+.gradle/
+build/
+!gradle/wrapper/gradle-wrapper.jar
+.gradle-app.setting
+captures/
+.externalNativeBuild/
+.cxx/
+
+# ---- Android ----
+*.apk
+*.aab
+*.ap_
+*.dex
+*.class
+bin/
+gen/
+out/
+release/
+proguard-rules.pro.bak
+
+# ---- Local config (machine specific) ----
+local.properties
+local.defaults.properties
+gradle.properties.local
+
+# ---- Secrets (NEVER commit) ----
+*.keystore
+*.jks
+*.p12
+*.pem
+keystore.properties
+signing.properties
+secrets.properties
+.env
+.env.*
+secrets.xml
+local.properties.bak
+
+# ---- IDE ----
+*.iml
+.idea/
+.kotlin/
+.kotlinc/
+
+# ---- Logs / temp ----
+*.log
+*.hprof
+*.tmp
+*.bak
+captures/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# ---- NexG IDE local workspace data ----
+# runtime scratch dirs, NOT source
+.jessy-ide/
+.nexg-tmp/
+terminal-transcripts/
