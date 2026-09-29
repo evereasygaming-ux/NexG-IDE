@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      Dark variant. The app defaults to dark (PLAN.MD 6.1: "dark-first"),
+      so the platform theme must also start dark to avoid a white flash
+      before Compose draws its first frame.
+    -->
+    <style name="Theme.NexG" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">#05060A</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+</resources>

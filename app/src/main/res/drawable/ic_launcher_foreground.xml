@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!--
+      NexG mark: an "N" chevron in the primary violet on the dark base.
+      Kept as a vector so no density-bucket bitmaps are needed at minSdk 26.
+    -->
+    <path
+        android:fillColor="#7C5CFF"
+        android:pathData="M34,72 L34,36 L42,36 L66,60 L66,36 L74,36 L74,72 L66,72 L42,48 L42,72 Z" />
+    <path
+        android:fillColor="#00E5FF"
+        android:pathData="M78,40 L82,40 L82,72 L78,72 Z" />
+</vector>

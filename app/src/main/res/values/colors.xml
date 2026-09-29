@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      Phase 1 status colours only. Feature colours live in Kotlin
+      (ui/theme/Color.kt) so Compose and XML cannot drift apart.
+    -->
+    <color name="ic_launcher_background">#05060A</color>
+</resources>

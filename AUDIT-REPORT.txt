@@ -1,0 +1,515 @@
+================================================================================
+                    NEXG IDE - PRE-BUILD FINAL AUDIT
+================================================================================
+
+Date        : 2026-09-29
+Auditor     : OpenCode (planning session)
+Repo        : /sdcard/Documents/NexG IDE
+Branch      : main
+Commits     : 4 (all documentation)
+Source files: 0  (.kt / .java / .gradle  -> none exist)
+Status      : PLANNING - no build ever run, no APK, no implementation
+
+Files read completely before this audit:
+  - PLAN.MD       (610 lines)
+  - OPENCODE.MD   (348 lines)
+  - REPORT.MD     (439 lines)
+
+Actions taken during audit: READ-ONLY ONLY
+  - read files
+  - ls / stat / git log / git status
+  - java -version
+  - curl GET (version metadata lookups)
+NOT done: no source modified, no dependency installed, no Gradle run,
+          no Android project created, no architecture changed.
+
+
+================================================================================
+1. VERIFIED ENVIRONMENT (re-confirmed today)
+================================================================================
+
+  SDK platforms:        android-34, android-36                     OK
+  SDK build-tools:      34.0.0, 35.0.0, 36.0.0 (+ 34 shim)        OK
+  Java:                 OpenJDK 21.0.12 (Termux)                   OK
+  Node:                 v24.18.0                                    OK
+  Gradle (system):      9.8.0                                       (not used)
+  Android SDK path:     /data/data/com.termux/files/home/android-sdk
+  ANDROID_HOME:         EMPTY  -> local.properties me sdk.dir dena hoga
+
+  Version availability (curl GET, read-only):
+    AGP 8.9.2                     EXISTS   (Google Maven)
+    AGP 8.10.0 / 8.10.1 / 8.11.2  EXISTS
+    AGP 8.13.2                    EXISTS
+    Compose BOM 2025.01.00         HTTP 200 (EXISTS)
+    Kotlin plugin 2.1.0            EXISTS
+    Compose Compiler plugin 2.1.0  EXISTS (SEPARATE artifact - see A2)
+
+  Resources:
+    RAM total 5.4 GiB | available 1.6 GiB | MemFree 139 MiB
+    Swap 6.0 GiB total, 3.8 GiB free (zram; /proc/swaps reads empty but swap runs)
+    CPUs 8 | Android 16 (SDK 36)
+
+  Termux / OpenCode:
+    Termux installed (com.termux, com.termux.styling) - F-Droid source
+    termux-api binary: ABSENT  (No such file or directory)
+    opencode 1.18.33, 177 MB
+    readelf -d opencode -> NEEDED libc.so.6, ld-linux-aarch64.so.1  (glibc)
+    Termux libc is bionic -> glibc binary cannot run natively
+
+  Network:
+    generativelanguage.googleapis.com -> HTTP 403
+    (403 = connectivity OK, API key missing. This is a GREEN signal, not a fail)
+
+  VERDICT: the C4 version-matrix fix from the previous plan was CORRECT.
+           The original (AGP 8.7 + compileSdk 36) combination was invalid.
+
+
+================================================================================
+2. THE 13 DECISIONS - VERIFICATION
+================================================================================
+
+  #   Decision                                     Verdict   Evidence
+  --  ------------------------------------------  --------  ---------------------------
+  1   Package name com.nexg.ide                   PASS      matches PLAN.MD:205
+                                                             app/src/main/java/com/nexg/ide/
+  2   Single Android application                  PASS      one 'app' module
+  3   Two capability tiers separated              PASS      Ph 1-7,14,15 = T1;
+                                                             Ph 8-13,17   = T2
+  4   4 shared ports                               WARNING   declared PLAN.MD:187;
+                                                             see A5, A7, A8
+  5   Gemini = default, OpenCode = Tier 2         PASS      PLAN.MD:311-315,
+                                                             Phase 4 vs Phase 12
+  6   Domain layer remains pure Kotlin            PASS      PLAN.MD:214 no Android
+                                                             imports
+  7   Manual dependency injection                 PASS      AppContainer; Hilt excluded
+  8   Single 'app' module                         PASS      preserved decision
+  9   Compose UI                                  PASS      Material 3, custom theme
+  10  propose -> diff -> approve -> apply         PASS      PLAN.MD:298, :336, :325
+  11  Destructive = explicit confirmation         PASS      PLAN.MD:326 APPROVAL class;
+                                                             voice included
+  12  No API key hardcoded into APK               PASS      C5 BYOK + OPENCODE.MD:107
+  13  Build config respects limited RAM           WARNING   PLAN.MD:460-479 correct;
+                                                             headroom tight - see A11
+
+  Leak checks requested:
+    Termux leaking into Tier 1 ?         NO  - Phases 1-7,14,15 all marked "no".
+                                           Voice uses SpeechRecognizer (Android API).
+    OpenCode accidentally mandatory ?    NO  - AiBackend interface lands Phase 4,
+                                           OpenCode adapter lands Phase 12.
+    Gemini replaced by OpenCode ?        NO  - default in PLAN.MD:313, never demoted.
+    Unnecessary background processes ?   NO  - no service/foreground service defined
+                                           for Tier 1.
+    Memory-heavy libraries ?             NO  - no Hilt, Retrofit, Coil, image libs.
+    Unnecessary dependencies ?           NO  - minimal, each justified.
+
+
+================================================================================
+3. CONFLICTS FOUND
+================================================================================
+
+--------------------------------------------------------------------------------
+A1  [BLOCKING]  Tier 1 vision contradicts its own resolution
+--------------------------------------------------------------------------------
+
+CONFLICT
+  PLAN.MD:61 promises the user installs and "does nothing... no API key
+  hunting, no configuration". PLAN.MD:150 (C5) resolves to BYOK, which
+  REQUIRES the user to obtain and paste a key. PLAN.MD:567 lists the gap
+  as MEDIUM and "accept" - but the Part 1 text was never corrected.
+
+EVIDENCE
+  PLAN.MD:61   "User installs the app and does nothing. No Termux, no Linux,
+                no API key hunting, no boot scripts, no configuration."
+  PLAN.MD:150  "Resolution: Bring-Your-Own-Key (BYOK) for Tier 1. The user
+                pastes their own Gemini key into a Keystore-backed screen."
+  PLAN.MD:567  "Gemini BYOK = friction vs. 'user does nothing' -> accept"
+
+IMPACT
+  This is the #1 drop-off point of any consumer app: install -> "go get an
+  API key" -> abandon. The entire product pivot ("user kuch na kare")
+  stands or falls on this. Right now the plan states a promise it does
+  not keep.
+
+RECOMMENDED RESOLUTION  (both valid - owner picks)
+  (a) Correct PLAN.MD:61 to state the real promise:
+      "one-time setup: paste your own free Gemini key"
+      Honest, zero server cost, Phase 1-7 complete with no backend.
+  (b) Make CloudProxyBackend MANDATORY for the Play Store build.
+      User does nothing; you run the proxy.
+      Costs: server + abuse protection + rate limiting.
+
+  Recommended: (a) for Phase 1-7. Decision (b) deferred to Phase 17.
+
+--------------------------------------------------------------------------------
+A2  [BLOCKING]  Missing: Compose Compiler Gradle Plugin
+--------------------------------------------------------------------------------
+
+CONFLICT
+  PLAN.MD declares Kotlin 2.1.0 but never declares the Compose Compiler
+  Gradle Plugin. Since Kotlin 2.0 the Compose compiler is NOT bundled with
+  AGP - it is a separate, MANDATORY plugin.
+
+EVIDENCE
+  curl .../org.jetbrains.kotlin.plugin.compose.gradle.plugin/maven-metadata.xml
+      <version>2.1.0</version>      <- EXISTS as a separate artifact
+  PLAN.MD:447-456  version matrix  <- compose plugin NOT listed
+  PLAN.MD:483-495  dependencies    <- compose plugin NOT listed
+
+IMPACT
+  Phase 1's very first command fails:
+      ./gradlew :app:assembleDebug
+  -> "Compose Compiler plugin not found" / unresolved plugin.
+  This is guaranteed, not probable.
+
+RECOMMENDED RESOLUTION
+  Root build.gradle.kts:
+      plugins {
+          id("com.android.application") version "8.9.2" apply false
+          id("org.jetbrains.kotlin.android") version "2.1.0" apply false
+          id("org.jetbrains.kotlin.plugin.compose") version "2.1.0" apply false
+      }
+  The compose plugin version MUST equal the Kotlin version exactly.
+
+--------------------------------------------------------------------------------
+A3  [BLOCKING for Tier 2]  Cleartext HTTP blocked for OpenCodeBackend
+--------------------------------------------------------------------------------
+
+CONFLICT
+  OpenCodeBackend targets http://127.0.0.1:4096 which is cleartext HTTP.
+  targetSdk 28+ blocks cleartext by default. Android grants NO automatic
+  exemption for localhost.
+
+EVIDENCE
+  PLAN.MD:314   "| `OpenCodeBackend` | 2 | HTTP `127.0.0.1:4096` |"
+  PLAN.MD:453   targetSdk 36  -> cleartext blocked by default
+
+IMPACT
+  Phase 12 fails at RUNTIME with:
+      CLEARTEXT communication to 127.0.0.1 not permitted
+  Discovered only after the client is written and debugged.
+
+RECOMMENDED RESOLUTION
+  Add res/xml/network_security_config.xml, scoped tightly to localhost only:
+      <network-security-config>
+        <domain-config cleartextTrafficPermitted="true">
+          <domain includeSubdomains="false">127.0.0.1</domain>
+          <domain includeSubdomains="false">localhost</domain>
+        </domain-config>
+      </network-security-config>
+  Reference it from the manifest. Tier 1 does not need it (Gemini = HTTPS).
+
+--------------------------------------------------------------------------------
+A4  [Tier 2]  Termux RUN_COMMAND cannot stream
+--------------------------------------------------------------------------------
+
+CONFLICT
+  The plan promises stdout/stderr streaming. Termux:API's RUN_COMMAND intent
+  returns output in a broadcast result - it is not a streaming API.
+
+EVIDENCE
+  PLAN.MD:277   "Input, stdout/stderr streaming, process state, ..."
+  PLAN.MD:287   "output streaming, progress, APK discovery, ..."
+  PLAN.MD:533   Phase 9 "... ANSI parser, streaming, Ctrl+C"
+
+IMPACT
+  A 5-minute assembleDebug would run with an empty screen, then dump all
+  output at once. The terminal would look hung. Real UX impact on Tier 2.
+
+RECOMMENDED RESOLUTION
+  Redefine honestly as polling:
+    "polling-based streaming: RUN_COMMAND launches in background, output is
+     redirected to a temp file, app tails that file every 1-2 s."
+  Write this explicitly into Phase 9 scope. A true PTY is not available
+  through Termux:API - accept that as a known limitation.
+
+--------------------------------------------------------------------------------
+A5  [Tier 1 flagship undefined]  Code generation / live preview has no component
+--------------------------------------------------------------------------------
+
+CONFLICT
+  The feature that makes this a product is undefined in the architecture.
+
+EVIDENCE
+  PLAN.MD:530    Phase 6 = "Code generation -> WebView live preview"
+  PLAN.MD:244    ui/components includes PreviewPane        <- only here
+  PLAN.MD:246    ui/screens: home, projects, workspace, explorer, editor,
+                  terminal, build, logs, ai, voice, settings  <- NO 'preview'
+  PLAN.MD:229    integration/: saf, gemini, termux, ubuntu, opencode, build
+                                                           <- no generator/preview
+  PLAN.MD:217    domain/port/: FileSystemPort, ExecutorPort, AiBackend, BuildPort
+                                                           <- no preview port
+  Part 4 (4.1-4.12)  no code-generation or preview component exists
+
+IMPACT
+  Phase 6 ("say it -> it exists -> see it") would be invented ad hoc and
+  would couple directly to AiBackend, undermining the port abstraction that
+  the whole two-tier design depends on.
+
+RECOMMENDED RESOLUTION
+  Add Part 4 section 4.13 "Code Generation & Live Preview" defining:
+    - generation prompt builder
+    - PreviewEngine (port) in domain/port/
+    - WebViewAssetLoader-based adapter in integration/preview/
+    - ui/screens/preview
+  OR consciously fold generation into AiBackend - but the decision must be
+  made now, not in Phase 6.
+
+--------------------------------------------------------------------------------
+A6  [Tier 1]  targetSdk 36 enforces edge-to-edge; no insets plan
+--------------------------------------------------------------------------------
+
+CONFLICT
+  API 35+ enforces edge-to-edge. The plan has no mention of
+  enableEdgeToEdge() or window insets.
+
+EVIDENCE
+  PLAN.MD:453   targetSdk 36  (Android 16)
+  PLAN.MD:411-425 visual system  <- zero mention of insets / edge-to-edge
+
+IMPACT
+  Content draws under the status and navigation bars. The top bar, the
+  VoiceOrb and the bottom input row are all affected - i.e. the most
+  visually prominent parts of the "futuristic" UI. Would not surface
+  until Phase 16 (Hardening), which is expensive to discover late.
+
+RECOMMENDED RESOLUTION
+  In Phase 1, as part of theme setup:
+    - enableEdgeToEdge() in MainActivity
+    - Scaffold + WindowInsets.safeDrawing
+    - Padding on orb, top bar, and input row
+  Add this to the Phase 1 exit gate.
+
+--------------------------------------------------------------------------------
+A7  [Order]  Port introduction is inconsistent across phases
+--------------------------------------------------------------------------------
+
+CONFLICT
+  Phase 2 introduces "SAF port". Phase 4 says "Ports + GeminiBackend",
+  implying all ports are introduced there.
+
+EVIDENCE
+  PLAN.MD:526   Phase 2 = "SAF port + adapter, ProjectManager, ..."
+  PLAN.MD:528   Phase 4 = "Ports + `GeminiBackend` (streaming, health) ..."
+
+IMPACT
+  Ambiguity about where the four port interfaces get defined. Minor, but it
+  is exactly the kind of ambiguity that causes rework.
+
+RECOMMENDED RESOLUTION
+  Define all four port interfaces in Phase 1 (they are pure Kotlin, near
+  zero cost). Implement adapters in their own phases.
+
+--------------------------------------------------------------------------------
+A8  [Dead code]  BuildPort is declared but never implemented or used
+--------------------------------------------------------------------------------
+
+CONFLICT
+  BuildPort appears in the architecture diagram and the port package, but
+  the Build Engine section never references it.
+
+EVIDENCE
+  PLAN.MD:187   BuildPort in the port-boundary diagram
+  PLAN.MD:217   domain/port/ lists BuildPort
+  PLAN.MD:285-289  4.6 Build Engine  <- no mention of BuildPort
+
+RECOMMENDED RESOLUTION
+  Either have 4.6 explicitly implement BuildPort, or remove it from the port
+  list. Dead abstractions are noise in the architecture.
+
+--------------------------------------------------------------------------------
+A9  [Source-of-truth conflict]  OPENCODE.MD section 4 still holds old architecture
+--------------------------------------------------------------------------------
+
+CONFLICT
+  PLAN.MD and OPENCODE.MD are BOTH declared source of truth, and they
+  disagree. OPENCODE.MD section 4 still describes the pre-pivot architecture.
+
+EVIDENCE
+  OPENCODE.MD:76-95   "ARCHITECTURE (target)":
+                      OpenCodeManager, termux/, ubuntu/, opencode/
+                      "Real Termux/Ubuntu/OpenCode ka backend use karna hai"
+  PLAN.MD:166-248     ports + tiers + Gemini default
+
+  Also stale:
+  OPENCODE.MD:50-51   proot-distro / OpenCode marked "UNVERIFIED"
+                      (both were verified in later entries)
+  OPENCODE.MD:309-310 Open questions 3 and 4 are now answered
+
+IMPACT
+  The next phase - or the next agent - may follow the wrong document. This
+  is a real correctness risk, not cosmetic.
+
+RECOMMENDED RESOLUTION
+  Reduce OPENCODE.MD section 4 to a pointer to PLAN.MD Part 3.
+  Refresh section 2 (environment) and section 8 (open questions).
+
+--------------------------------------------------------------------------------
+A10 [Trivial]  REPORT.MD cross-reference points to the wrong part
+--------------------------------------------------------------------------------
+
+EVIDENCE
+  REPORT.MD:427   "Owner Part 11 ke sawalon ka jawab de"
+  PLAN.MD:578     Open questions live in PART 10
+                   (Part 11 is "source of truth rules")
+
+RECOMMENDED RESOLUTION
+  Change "Part 11" -> "Part 10".
+
+--------------------------------------------------------------------------------
+A11 [Resource warning]  In-process Compose compiler at -Xmx768m is tight
+--------------------------------------------------------------------------------
+
+EVIDENCE
+  PLAN.MD:466   org.gradle.jvmargs=-Xmx768m
+  PLAN.MD:472   kotlin.compiler.execution.strategy=in-process
+  PLAN.MD:462   "5.4 GiB total / 1.6 GiB available"
+
+  in-process means the Kotlin AND Compose compilers run inside the Gradle
+  daemon's 768 MB heap. Compose compilation is memory-hungry.
+
+IMPACT
+  Fine for Phase 1-2. Rising OOM risk from Phase 3 onward (7 language
+  definitions, custom CodeSurface) and through Phases 6-7. Will NOT
+  surface on day one - an expensive late discovery.
+
+RECOMMENDED RESOLUTION
+  Change nothing now; PLAN.MD 7.2 is correct for the current machine.
+  Document the escalation path and decide at Phase 3:
+    1. keep -Xmx768m + workers.max=1, confirm stable
+    2. on OOM -> drop in-process, separate Kotlin daemon, Gradle -Xmx1024m
+    3. if still tight -> move GRADLE_USER_HOME to faster storage
+
+--------------------------------------------------------------------------------
+A12 [Resource warning]  AGP 8.9.2 + compileSdk 36 is an edge case
+--------------------------------------------------------------------------------
+
+EVIDENCE
+  Google Maven (verified today):
+      8.9.2 EXISTS | 8.10.0 | 8.10.1 | 8.11.2 | 8.13.2 all EXIST
+  AGP 8.9's max TESTED compileSdk is 36-preview. Targeting final API 36
+  may emit an "untested compileSdk" warning.
+
+IMPACT
+  Warning, not a failure. Becomes a real blocker only if a future AGP
+  hard-fails on untested compileSdk.
+
+RECOMMENDED RESOLUTION
+  AGP 8.10.1 + Gradle 8.13 + Kotlin 2.1.0 is a safer trio.
+  Low urgency - PLAN.MD:457 already says "resolve for real in Phase 1".
+  Owner decision.
+
+
+================================================================================
+4. FINAL REPORT
+================================================================================
+
+  Architecture .............. PASS
+      Layered, ports, tiers are sound.
+      Gaps: A5, A7, A8 to fill.
+
+  Tier 1 .................... FAIL
+      A1 - vision contradicts its own resolution.
+
+  Tier 2 .................... FAIL
+      A3 - cleartext HTTP runtime blocker.
+      A4 - streaming not achievable with the chosen mechanism.
+
+  AI Architecture ........... PASS
+      AiBackend is clean, Gemini is default, OpenCode correctly deferred
+      to Phase 12. No leakage in either direction.
+
+  Security ................. PASS
+      BYOK, no key in APK, three-tier operation classifier, voice cannot
+      bypass confirmation.
+
+  Build Architecture ....... FAIL
+      A2 - mandatory Compose Compiler plugin missing; Phase 1's first
+      build is guaranteed to fail.
+
+  Resource Constraints ..... WARNING
+      A11 tight headroom, A12 AGP edge case. Configuration is correct;
+      margin is thin.
+
+
+================================================================================
+5. REMAINING CONFLICTS
+================================================================================
+
+  BLOCKING:  A1   A2   A3
+  WARNINGS :  A4   A5   A6   A7   A8   A9   A10   A11   A12
+
+  CLEAN (explicitly checked, no issue found):
+    - Termux is NOT leaking into Tier 1
+    - OpenCode is NOT mandatory
+    - Gemini is NOT being replaced
+    - No API key is hardcoded into the APK
+    - No unnecessary background processes
+    - No memory-heavy libraries
+    - Package name is internally consistent
+    - SDK assumptions match what is installed
+    - Original version matrix fix (C4) was correct
+
+
+================================================================================
+6. REQUIRED DECISIONS (owner only)
+================================================================================
+
+  1. A1  - BYOK (option a) or mandatory proxy for Play Store (option b)?
+           This decides the product.
+  2. A12 - AGP 8.9.2 (as planned) or 8.10.1 (safer)?
+  3. Package name com.nexg.ide - confirm?
+           (still open at PLAN.MD:582)
+  4. A5  - fold code generation into AiBackend, or a separate
+           PreviewEngine port?
+
+  No owner input needed for:
+      A2, A3, A4, A6, A7, A8, A9, A10, A11
+      These are documentation / plan corrections only.
+
+
+================================================================================
+7. FINAL STATUS
+================================================================================
+
+                          NOT READY FOR PHASE 1
+
+  Why, honestly:
+
+  Two things block Phase 1 specifically:
+
+    1. A1 is the product PROMISE. The plan states "user does nothing"
+       while its own resolution requires the user to fetch an API key.
+       That is the owner's call to make, not mine to assume.
+
+    2. A2 means the documented build configuration is known-incomplete.
+       The very first assembleDebug in Phase 1 would fail.
+
+  This is NOT far away. It is roughly 9 small document corrections plus
+  2 owner decisions. The architecture itself does not need to be
+  redesigned - that already happened, three days ago, at zero cost.
+
+  Nothing was modified during this audit.
+  No build was run. No dependency was installed. No source was written.
+
+
+================================================================================
+8. WHAT WAS NOT DONE (deliberate)
+================================================================================
+
+  - No source code modified
+  - No dependency installed
+  - No Gradle command run
+  - No Android project created
+  - No architecture changed (all conflicts reported, none silently fixed)
+  - No new folder created ("NexGIDE" does not exist; file placed in the
+    existing "/sdcard/Documents/NexG IDE" project folder)
+
+
+================================================================================
+Report generated : 2026-09-29
+Source of truth  : PLAN.MD (architecture) / OPENCODE.MD (work log)
+Code written     : 0 lines
+Commits          : 4 (all documentation)
+Next action      : owner answers the 4 decisions, then Phase 1 begins.
+                   No implementation without explicit approval.
+================================================================================

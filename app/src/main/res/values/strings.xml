@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">NexG IDE</string>
+
+    <string name="home_title">NexG IDE</string>
+    <string name="home_tagline">Mobile-first Android IDE</string>
+    <string name="action_open_project">Open Project</string>
+    <string name="action_new_project">New Project</string>
+    <string name="section_recent_projects">Recent Projects</string>
+    <string name="section_ai_assistant">AI Assistant</string>
+    <string name="ai_prompt_placeholder">How can I help?</string>
+
+    <string name="empty_recent_projects">No projects yet. Open or create one to begin.</string>
+    <string name="phase1_placeholder">Scaffold only. Implemented in a later phase.</string>
+
+    <string name="nav_home">Home</string>
+    <string name="nav_projects">Projects</string>
+    <string name="nav_ai">AI</string>
+    <string name="nav_settings">Settings</string>
+    <string name="nav_files">Files</string>
+    <string name="nav_editor">Editor</string>
+    <string name="nav_build">Build</string>
+    <string name="nav_logs">Logs</string>
+    <string name="nav_terminal">Terminal</string>
+
+    <string name="cd_back">Navigate up</string>
+    <string name="cd_settings">Settings</string>
+    <string name="cd_ai_prompt">AI prompt input</string>
+    <string name="cd_voice_orb">Voice assistant, not available in this build</string>
+</resources>
