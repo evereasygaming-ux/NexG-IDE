@@ -192,6 +192,34 @@ $ git log --stat --oneline
 
 ---
 
+### Entry 003 — 2026-09-29 06:45 — Master plan banaya (no code)
+
+**Kya kiya:**
+- Environment ka deep reality-check (network, SDK, RAM, proot, opencode, node).
+- `docs/PLAN.MD` likha — 534 lines, 8 parts (A–H).
+
+**3 asli problems mile (verified, not assumed):**
+1. ❌ **`termux-api` installed nahi** → app Termux ko command nahi bhej sakta.
+   `RUN_COMMAND` service missing. Terminal + Ubuntu features ke liye setup chahiye.
+2. ⚠️ **Main session proot ke andar hai** (`PD_CONTAINER=ubuntu`, Ubuntu 26.04.1 LTS,
+   `/proc/self/root -> .../ubuntu/rootfs`). Isliye yahan se `proot-distro` nahi chal sakta —
+   nested proot forbidden. **Expected hai**, app ke liye blocker nahi.
+3. 🔴 **RAM sirf 1.0 GiB free** (5.4 GiB total) → Gradle build OOM risk. `jvmargs` tuning mandatory.
+
+**Achha mila:** network 200 (Google Maven/Central/Plugin Portal), SDK `android-36` + build-tools 34/35/36,
+`opencode 1.18.33` with **`opencode serve`** (real HTTP API → MODE B possible), node v24.18.0, proot-distro installed.
+
+**Key architectural decision (is problem se nikla):**
+> AI ko Termux ki zaroorat nahi — `opencode serve` HTTP deta hai.
+> Sirf *terminal* aur *Ubuntu* ko Termux chahiye. Isse app ~90% kaam bina Termux ke karta hai.
+
+**Decisions locked:** manual DI (Hilt nahi — RAM/ksp), Proto DataStore + Room,
+SAF for files, OkHttp+SSE for OpenCode, custom Compose `TextFieldValue` editor, no heavy deps.
+
+**Kya nahi kiya:** koi build nahi chalaya, koi source code nahi likha.
+
+---
+
 ## 8. OPEN QUESTIONS / BLOCKERS
 
 1. ❓ Package name kya rakhein? (`com.nexg.ide`? `com.project.nexg`?)
