@@ -1,5 +1,18 @@
 name: CI
 
+# The primary verification and build path for this project.
+#
+# The phone (Termux) is a low-RAM device: gradle.properties is pinned to a ~1.6 GiB
+# envelope by PLAN.MD 7.2, and a clean build there is slow enough to be the reason
+# this workflow exists. GitHub Actions is a hosted runner with several times that
+# memory, so the full verify + build workload runs here and the phone is left for
+# editing, Git, installing the artifact and real-device evidence.
+#
+# A green run here means: tests passed, code compiled, and a debug APK was produced.
+# It does NOT mean the app was installed, launched or exercised on hardware. Those
+# are separate, and the step summary says so explicitly so the two can never be
+# confused in a report.
+
 on:
   push:
     branches: [ main ]
@@ -12,63 +25,366 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  GRADLE_USER_HOME: ${{ github.workspace }}/.gradle
+  # Pinned to what PLAN.MD defines. Do not drift these without a plan change.
+  JAVA_VERSION: '21'
+  ANDROID_PLATFORM: 'android-36'
+  ANDROID_BUILD_TOOLS: '36.0.0'
+  GRADLE_VERSION: '8.13'
+  # Matches the Node toolchain the editor assets are known to build under on the
+  # device (v24). `node --test` with a quoted glob needs a modern test runner.
+  NODE_VERSION: '24'
+  NODE_WORKDIR: 'editor-assets'
 
 jobs:
-  test-and-build:
-    name: JVM tests + Debug build
+  verify:
+    name: Verify (assets + JVM + APK)
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
+    # Read-only. Deliberately no `actions: write`: the test summary is produced
+    # locally from the JUnit XML, so nothing here needs the Checks API and the
+    # workflow cannot be made to fail by a third-party reporting action.
     permissions:
       contents: read
-      actions: write
 
     steps:
+      # fetch-depth 2 so `HEAD^` exists. checkout@v4 is shallow by default, and
+      # without the parent commit the whitespace check below would have no diff
+      # to inspect.
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
 
-      - name: Set up JDK 21
+      - name: Set up JDK ${{ env.JAVA_VERSION }}
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
-          java-version: '21'
+          java-version: ${{ env.JAVA_VERSION }}
           cache: 'gradle'
 
-      - name: Setup Android SDK
+      - name: Setup Android SDK (platform ${{ env.ANDROID_PLATFORM }}, build-tools ${{ env.ANDROID_BUILD_TOOLS }})
         uses: android-actions/setup-android@v3
         with:
-          packages: 'platforms;android-36 build-tools;36.0.0'
+          packages: 'platforms;${{ env.ANDROID_PLATFORM }} build-tools;${{ env.ANDROID_BUILD_TOOLS }}'
           accept-licenses: true
 
-      - name: Validate Gradle Wrapper
-        uses: gradle/actions/wrapper-validation@v4
-
+      # The wrapper is not executable in this working tree, so make it runnable
+      # before anything tries to invoke it.
       - name: Make gradlew executable
+        id: step_chmod
         run: chmod +x ./gradlew
 
-      - name: Clean
-        run: ./gradlew clean
+      - name: Validate Gradle wrapper
+        id: step_wrapper
+        uses: gradle/actions/wrapper-validation@v4
 
-      - name: Run JVM unit tests (testDebugUnitTest)
-        run: ./gradlew :app:testDebugUnitTest
+      # PLAN.MD pins the wrapper version, so a silent wrapper bump is a real drift
+      # signal rather than something to absorb quietly.
+      - name: Verify Gradle version (${{ env.GRADLE_VERSION }})
+        id: step_gradle_version
+        run: |
+          set -euo pipefail
+          actual=$(./gradlew --version | sed -n 's/^Gradle //p' | head -1)
+          echo "Wrapper reports Gradle ${actual:-<unknown>}"
+          if [ "$actual" != "$GRADLE_VERSION" ]; then
+            echo "::error::Gradle wrapper is '${actual:-<unknown>}' but PLAN.MD pins '$GRADLE_VERSION'"
+            exit 1
+          fi
 
-      - name: Assemble Debug APK
-        run: ./gradlew :app:assembleDebug
+      # ---------------------------------------------------------------- hygiene
+      # `git diff --check` on its own is decorative in CI: a fresh checkout has a
+      # clean working tree, so there is nothing staged to inspect and it passes
+      # whatever the commit contains. The range is what matters —
+      #   push / workflow_dispatch -> the last commit on the branch
+      #   pull_request             -> actions/checkout checks out the PR merge
+      #                              commit, whose first parent is the base, so
+      #                              HEAD^..HEAD is exactly the PR's diff
+      # A squash/rebase merge still yields the full change under this range.
+      - name: Check whitespace in the committed diff (git diff --check)
+        id: step_diff_check
+        run: |
+          set -euo pipefail
+          if ! git rev-parse --verify --quiet HEAD^ >/dev/null; then
+            echo "::error::No parent commit available; checkout depth is too small to diff"
+            exit 1
+          fi
+          if ! out=$(git diff --check "HEAD^" HEAD); then
+            echo "::error::git diff --check HEAD^ HEAD reported whitespace errors:"
+            echo "$out"
+            exit 1
+          fi
+          echo "git diff --check HEAD^ HEAD: clean"
+          echo "Files in this diff:"
+          git diff --name-only "HEAD^" HEAD | sed 's/^/  /'
 
+      - name: Confirm the working tree starts clean (tracked files only)
+        id: step_tree_clean
+        run: |
+          set -euo pipefail
+          dirty=$(git status --porcelain --untracked-files=no)
+          if [ -n "$dirty" ]; then
+            echo "::error::Tracked files were already modified before the build:"
+            echo "$dirty"
+            exit 1
+          fi
+          echo "Tracked working tree is clean before the build"
+
+      # ------------------------------------------------- Node / editor assets
+      # The CodeMirror 6 editor is bundled as build-time-only assets; its bridge
+      # logic (language mapping, message codec, offset clamping, command whitelist)
+      # is pinned by a DOM-free Node test suite. `npm ci` is used rather than
+      # `npm install` so the lockfile is authoritative and reproducible.
+      - name: Set up Node ${{ env.NODE_VERSION }}
+        id: step_node_setup
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: 'editor-assets/package-lock.json'
+
+      - name: Install editor asset dependencies (npm ci)
+        id: step_npm_ci
+        working-directory: ${{ env.NODE_WORKDIR }}
+        run: npm ci --no-audit --no-fund
+
+      - name: Run editor asset tests (node --test)
+        id: step_asset_tests
+        working-directory: ${{ env.NODE_WORKDIR }}
+        run: npm test
+
+      # ------------------------------------------------------------ JVM tests
+      # CI-only memory override. gradle.properties is deliberately left exactly as
+      # PLAN.MD 7.2 mandates it for the phone (~1.6 GiB available, workers.max=1).
+      # Those values are correct for that device and needlessly slow on a hosted
+      # runner, so they are overridden here on the command line only. Command-line
+      # system properties take precedence over gradle.properties, so the file is
+      # still the single source of truth for local builds.
+      - name: JVM unit tests (testDebugUnitTest)
+        id: step_unit_tests
+        run: |
+          ./gradlew :app:testDebugUnitTest \
+            -Dorg.gradle.jvmargs="-Xmx3g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8" \
+            -Dorg.gradle.workers.max=4
+
+      - name: Assemble debug APK
+        id: step_assemble
+        run: |
+          ./gradlew :app:assembleDebug \
+            -Dorg.gradle.jvmargs="-Xmx3g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8" \
+            -Dorg.gradle.workers.max=4
+
+      # The build must not have modified tracked sources. Cheap, and it turns a
+      # whole class of "works on my machine" problems into a red run.
+      - name: Confirm the build did not modify tracked files
+        id: step_tree_after
+        run: |
+          set -euo pipefail
+          dirty=$(git status --porcelain --untracked-files=no)
+          if [ -n "$dirty" ]; then
+            echo "::error::The build modified tracked files:"
+            echo "$dirty"
+            exit 1
+          fi
+          echo "Tracked working tree is still clean after the build"
+
+      # --------------------------------------------------------- APK verify
+      # Existence and size are checked explicitly *before* the upload, so a missing
+      # APK fails here with a named stage instead of turning into an upload error.
+      - name: Verify APK exists and is not empty
+        id: step_apk_exists
+        run: |
+          set -euo pipefail
+          apk="app/build/outputs/apk/debug/app-debug.apk"
+          if [ ! -f "$apk" ]; then
+            echo "::error::APK not found at $apk"
+            ls -R app/build/outputs 2>/dev/null || true
+            exit 1
+          fi
+          size=$(stat -c %s "$apk")
+          if [ "$size" -le 0 ]; then
+            echo "::error::APK at $apk is empty ($size bytes)"
+            exit 1
+          fi
+          echo "APK present: $apk ($size bytes)"
+          echo "apk_size_bytes=$size" >> "$GITHUB_OUTPUT"
+
+      - name: Verify APK is a readable zip and record its hash
+        id: step_apk_hash
+        run: |
+          set -euo pipefail
+          apk="app/build/outputs/apk/debug/app-debug.apk"
+          if ! unzip -t "$apk" > /dev/null 2>&1; then
+            echo "::error::$apk is not a readable zip archive - the APK is truncated or corrupt"
+            exit 1
+          fi
+          sha=$(sha256sum "$apk" | awk '{print $1}')
+          echo "APK is a valid zip archive"
+          echo "APK SHA-256: $sha"
+          echo "apk_sha256=$sha" >> "$GITHUB_OUTPUT"
+
+      # Metadata via aapt2 from the pinned build-tools. "Where practical": if aapt2
+      # is not where we expect it, say so and continue — size and hash are already
+      # recorded, and failing here would report a tooling gap as a build failure.
+      - name: Verify APK metadata (aapt2 badging)
+        id: step_apk_meta
+        run: |
+          set -uo pipefail
+          apk="app/build/outputs/apk/debug/app-debug.apk"
+          bt="${ANDROID_BUILD_TOOLS:-36.0.0}"
+          aapt2="${ANDROID_HOME:-/usr/local/lib/android/sdk}/build-tools/${bt}/aapt2"
+          if [ -x "$aapt2" ]; then
+            badging=$("$aapt2" dump badging "$apk" 2>/dev/null || true)
+            echo "$badging" | grep -E "^package:|^application-label:|^sdkVersion:|^targetSdkVersion:" || true
+            pkg=$(echo "$badging" | sed -n "s/^package: name='\([^']*\)'.*/\1/p")
+            if [ -z "$pkg" ]; then
+              echo "::warning::aapt2 ran but reported no package name"
+            else
+              echo "apk_package=$pkg" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "::warning::aapt2 not found at $aapt2 - skipping metadata check"
+            echo "(size, hash and zip integrity were still verified)"
+          fi
+
+      # ------------------------------------------------------------- summary
+      # Everything the report needs, in one place, produced locally from the JUnit
+      # XML so it cannot silently disagree with the build.
+      - name: Build summary
+        id: step_summary
+        if: ${{ always() }}
+        run: |
+          set -uo pipefail
+          results="app/build/test-results/testDebugUnitTest"
+          python3 - "$results" >> "$GITHUB_STEP_SUMMARY" <<'PY'
+          import glob, os, sys, xml.etree.ElementTree as ET
+
+          results_dir = sys.argv[1]
+          files = sorted(glob.glob(os.path.join(results_dir, "*.xml")))
+
+          tests = failures = errors = skipped = 0
+          bad = []
+          for f in files:
+              try:
+                  r = ET.parse(f).getroot()
+              except ET.ParseError as e:
+                  bad.append(f"{os.path.basename(f)}: unreadable ({e})")
+                  continue
+              tests += int(r.get("tests", 0))
+              failures += int(r.get("failures", 0))
+              errors += int(r.get("errors", 0))
+              skipped += int(r.get("skipped", 0))
+              for case in r.iter("testcase"):
+                  for child in list(case):
+                      if child.tag in ("failure", "error"):
+                          bad.append(f"{case.get('classname')}.{case.get('name')}")
+
+          print("## CI summary\n")
+          if files:
+              verdict = "PASSED" if failures == 0 and errors == 0 else "FAILED"
+              print(f"- **Unit tests: {verdict}** - {tests} tests, {failures} failures, "
+                    f"{errors} errors, {skipped} skipped, across {len(files)} classes")
+          else:
+              print("- **Unit tests: NOT RUN** - no JUnit XML produced "
+                    "(the test stage did not complete, or was skipped)")
+          for b in bad[:25]:
+              print(f"  - `{b}`")
+          if len(bad) > 25:
+              print(f"  - ... and {len(bad) - 25} more (see the test-results artifact)")
+
+          apk = "app/build/outputs/apk/debug/app-debug.apk"
+          print()
+          if os.path.isfile(apk) and os.path.getsize(apk) > 0:
+              print(f"- **APK built:** `{apk}` ({os.path.getsize(apk)} bytes)")
+          else:
+              print(f"- **APK built:** NO - not found or empty at `{apk}`")
+          PY
+
+      - name: Write build outputs
+        id: step_outputs
+        if: ${{ always() }}
+        run: |
+          set -uo pipefail
+          results="app/build/test-results/testDebugUnitTest"
+          python3 - "$results" >> "$GITHUB_OUTPUT" <<'PY'
+          import glob, os, sys, xml.etree.ElementTree as ET
+
+          results_dir = sys.argv[1]
+          files = glob.glob(os.path.join(results_dir, "*.xml"))
+          t = f = e = s = 0
+          for path in files:
+              try:
+                  r = ET.parse(path).getroot()
+              except ET.ParseError:
+                  continue
+              t += int(r.get("tests", 0))
+              f += int(r.get("failures", 0))
+              e += int(r.get("errors", 0))
+              s += int(r.get("skipped", 0))
+          print(f"test_count={t}")
+          print(f"test_failures={f}")
+          print(f"test_errors={e}")
+          print(f"test_skipped={s}")
+          print(f"commit_sha={os.environ.get('GITHUB_SHA', '')}")
+          print(f"commit_short={os.environ.get('GITHUB_SHA', '')[:7]}")
+          print(f"ref={os.environ.get('GITHUB_REF', '')}")
+          PY
+
+      - name: Render final job summary
+        if: ${{ always() }}
+        env:
+          TEST_COUNT: ${{ steps.step_outputs.outputs.test_count }}
+          TEST_FAILURES: ${{ steps.step_outputs.outputs.test_failures }}
+          TEST_ERRORS: ${{ steps.step_outputs.outputs.test_errors }}
+          TEST_SKIPPED: ${{ steps.step_outputs.outputs.test_skipped }}
+          APK_SIZE: ${{ steps.step_apk_exists.outputs.apk_size_bytes }}
+          APK_SHA: ${{ steps.step_apk_hash.outputs.apk_sha256 }}
+          APK_PKG: ${{ steps.step_apk_meta.outputs.apk_package }}
+          COMMIT_SHA: ${{ steps.step_outputs.outputs.commit_sha }}
+          COMMIT_SHORT: ${{ steps.step_outputs.outputs.commit_short }}
+        run: |
+          {
+            echo "### Result"
+            echo
+            if [ "${{ job.status }}" = "success" ]; then
+              echo "- **CI: PASS** - tests, compile and debug assemble all succeeded"
+            else
+              echo "- **CI: FAIL** - see the failing stage below"
+            fi
+            echo
+            echo "| Item | Value |"
+            echo "|---|---|"
+            echo "| Unit tests | ${TEST_COUNT} run, ${TEST_FAILURES} failures, ${TEST_ERRORS} errors, ${TEST_SKIPPED} skipped |"
+            echo "| Editor asset tests (node) | see the \`Run editor asset tests\` step |"
+            echo "| Debug APK | \`app/build/outputs/apk/debug/app-debug.apk\` |"
+            echo "| APK size | ${APK_SIZE:-unknown} bytes |"
+            echo "| APK SHA-256 | \`${APK_SHA:-not computed}\` |"
+            echo "| APK package | ${APK_PKG:-not read} |"
+            echo "| Commit | \`${COMMIT_SHA:-unknown}\` (${COMMIT_SHORT:-?}) |"
+            echo
+            echo "### CI is not device verification"
+            echo
+            echo "A green CI run means tests passed, the code compiled and a debug APK exists."
+            echo "It does **not** mean the APK was installed or launched, that the UI renders,"
+            echo "or that any editor interaction works on real hardware. Install and exercise the"
+            echo "artifact on a device for that, and keep the two verdicts separate."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # ----------------------------------------------------------- artifacts
       - name: Upload debug APK artifact
+        id: step_upload_apk
         uses: actions/upload-artifact@v4
         with:
-          name: app-debug
+          name: app-debug-${{ steps.step_outputs.outputs.commit_short }}
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 14
 
       - name: Upload unit test results
-        uses: actions/upload-artifact@v4
         if: ${{ always() }}
+        uses: actions/upload-artifact@v4
         with:
-          name: test-results-testDebugUnitTest
+          name: test-results-${{ steps.step_outputs.outputs.commit_short }}
           path: |
             app/build/test-results/testDebugUnitTest/*.xml
             app/build/reports/tests/testDebugUnitTest/**
@@ -76,8 +392,8 @@ jobs:
           retention-days: 14
 
       - name: Upload build reports (on failure)
-        uses: actions/upload-artifact@v4
         if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
         with:
           name: build-reports
           path: |
@@ -86,18 +402,37 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
-      - name: Summarize test results
-        if: ${{ always() }}
-        uses: dorny/test-reporter@v1
-        with:
-          name: JVM unit tests
-          path: app/build/test-results/testDebugUnitTest/*.xml
-          reporter: java-junit
-          fail-on-error: false
-          max-annotations: 20
-
-      - name: Fail if tests failed
+      # ------------------------------------------------------------- failure
+      # Names the exact stage that failed. This is deliberately last and always
+      # runs, so a red run explains itself instead of only showing a red dot.
+      - name: Report failing stage
         if: ${{ failure() }}
         run: |
-          echo "Tests or build failed. See uploaded artifacts and the test report above."
+          echo "::error::CI failed. Failing stage:"
+          failed=""
+          [ "${{ steps.step_chmod.outcome }}"      = "failure" ] && failed="${failed} Make gradlew executable\n"
+          [ "${{ steps.step_wrapper.outcome }}"     = "failure" ] && failed="${failed} Validate Gradle wrapper\n"
+          [ "${{ steps.step_gradle_version.outcome }}" = "failure" ] && failed="${failed} Gradle version drift (PLAN.MD pins $GRADLE_VERSION)\n"
+          [ "${{ steps.step_diff_check.outcome }}"  = "failure" ] && failed="${failed} git diff --check (whitespace)\n"
+          [ "${{ steps.step_tree_clean.outcome }}"  = "failure" ] && failed="${failed} Working tree not clean before build\n"
+          [ "${{ steps.step_node_setup.outcome }}"  = "failure" ] && failed="${failed} Set up Node\n"
+          [ "${{ steps.step_npm_ci.outcome }}"      = "failure" ] && failed="${failed} npm ci (editor assets)\n"
+          [ "${{ steps.step_asset_tests.outcome }}" = "failure" ] && failed="${failed} Editor asset tests (node --test)\n"
+          [ "${{ steps.step_unit_tests.outcome }}"  = "failure" ] && failed="${failed} JVM unit tests (testDebugUnitTest)\n"
+          [ "${{ steps.step_assemble.outcome }}"    = "failure" ] && failed="${failed} Assemble debug APK (assembleDebug)\n"
+          [ "${{ steps.step_tree_after.outcome }}"  = "failure" ] && failed="${failed} Build modified tracked files\n"
+          [ "${{ steps.step_apk_exists.outcome }}"  = "failure" ] && failed="${failed} APK existence check\n"
+          [ "${{ steps.step_apk_hash.outcome }}"    = "failure" ] && failed="${failed} APK integrity/hash\n"
+          [ "${{ steps.step_apk_meta.outcome }}"    = "failure" ] && failed="${failed} APK metadata (aapt2)\n"
+          [ "${{ steps.step_upload_apk.outcome }}"  = "failure" ] && failed="${failed} Upload APK artifact\n"
+          if [ -n "$failed" ]; then
+            printf "%b" "$failed"
+          else
+            echo "(a non-gated step failed)"
+          fi
+          echo
+          echo "This is a CI failure. There is no phone fallback: a local build on the"
+          echo "device is not a substitute for a red run, and this run must not be"
+          echo "reported as green. The editor asset and JVM test XML are in the"
+          echo "artifacts attached to this run."
           exit 1
