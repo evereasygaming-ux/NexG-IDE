@@ -1,0 +1,361 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# nexg-test — NexG IDE debug test CLI.
+#
+# Talks to the app's DEBUG-ONLY test bridge (com.nexg.ide.testing.NexGTestReceiver)
+# and renders its answers. This is test infrastructure: the receiver only exists
+# in the debug variant, and it refuses to answer unless the build is debuggable
+# with the harness compiled in.
+#
+# Transport: an `am broadcast` to the debug receiver, then a read of the reply
+# file in the app's external files directory (readable from the shell without any
+# permission). No listening socket is opened by the app.
+#
+# Authorization: the receiver is exported (the shell cannot hold a signature
+# permission), so every request carries a per-install token. The CLI obtains that
+# token the only way it can — from the shell-readable mirror the app writes when
+# it starts. Running the app once is therefore the intended flow; this script
+# does it for you if the mirror is missing.
+#
+# Every subcommand prints exactly one verdict line: PASS, FAIL, UNAVAILABLE,
+# UNSUPPORTED, or MANUAL_DEVICE_REQUIRED. UNAVAILABLE is never rewritten to PASS.
+#
+# Usage:
+#   nexg-test status        app / bridge / Shizuku status
+#   nexg-test launch        start the debug app
+#   nexg-test project       project-management checks
+#   nexg-test editor        controlled editor checks
+#   nexg-test phase4        AI/BYOK state checks (never prints a key)
+#   nexg-test full          every available device test
+#   nexg-test report        write the structured report
+#   nexg-test check         run the test-harness unit tests on the JVM
+
+set -uo pipefail
+
+PKG="com.nexg.ide"
+ACTION="com.nexg.ide.TEST_REQUEST"
+REPLY_DIR="/sdcard/Android/data/${PKG}/files/nexg-test"
+REPLY="${REPLY_DIR}/nexg-test-reply.json"
+TOKEN_FILE="${REPLY_DIR}/nexg-test-token.txt"
+TOKEN=""
+REPORT="${REPORT_PATH:-/sdcard/Download/NexG-device-test-report.txt}"
+ADB="${ADB:-adb}"
+C_RESET=$'\033[0m'; C_RED=$'\033[31m'; C_GREEN=$'\033[32m'
+C_YELLOW=$'\033[33m'; C_BLUE=$'\033[34m'; C_DIM=$'\033[2m'
+
+# ---------------------------------------------------------------- utilities
+
+have() { command -v "$1" >/dev/null 2>&1; }
+
+# Shizuku's shell wrapper, if this device has one. rish is the official client;
+# `rish -c` runs one command with Shizuku's privileges.
+rish_run() {
+  if have rish; then rish -c "$1"; return $?; fi
+  # Fall back to plain adb, which works when a host is attached even without Shizuku.
+  if have "$ADB"; then "$ADB" shell "$1"; return $?; fi
+  return 127
+}
+
+shizuku_available() {
+  rish_run "echo ok" >/dev/null 2>&1
+}
+
+adb_devices_attached() {
+  have "$ADB" || return 1
+  local out
+  out="$("$ADB" devices 2>/dev/null | sed -n '2,$p' | grep -c 'device$')"
+  [ "${out:-0}" -gt 0 ]
+}
+
+verdict_line() { # <verdict> <detail>
+  local v="$1" d="${2:-}"
+  local colour="$C_DIM"
+  case "$v" in
+    PASS) colour="$C_GREEN" ;;
+    FAIL) colour="$C_RED" ;;
+    UNAVAILABLE|UNSUPPORTED|MANUAL_DEVICE_REQUIRED) colour="$C_YELLOW" ;;
+  esac
+  printf '%s%-24s%s %s\n' "$colour" "$v" "$C_RESET" "$d"
+}
+
+require_transport() {
+  if shizuku_available; then return 0; fi
+  if adb_devices_attached; then return 0; fi
+  cat >&2 <<EOF
+TRANSPORT: UNAVAILABLE
+  Neither Shizuku (rish) nor an attached adb device can run shell commands here.
+  Without one, the app's test bridge cannot be started or reached, so every
+  device test below is honestly UNAVAILABLE rather than PASS.
+
+  DEVICE VERIFICATION: UNAVAILABLE
+  SHIZUKU: UNAVAILABLE
+EOF
+  return 1
+}
+
+# Reads the per-install token the app mirrored into shell-readable storage.
+#
+# The app mints it on start, so the first request after a fresh install has
+# nothing to read. Rather than making the user launch the app by hand, this asks
+# the (non-exported, so app-internal only) boot activity to start, which mints
+# the token and rewrites the mirror, then reads it back.
+load_token() {
+  [ -n "$TOKEN" ] && return 0
+  if [ -s "$TOKEN_FILE" ]; then
+    TOKEN="$(tr -d ' \t\r\n' < "$TOKEN_FILE")"
+    [ -n "$TOKEN" ] && return 0
+  fi
+  rish_run "am start -n ${PKG}/.testing.NexGTestBootActivity" >/dev/null 2>&1
+  local i=0
+  while [ $i -lt 25 ]; do
+    if [ -s "$TOKEN_FILE" ]; then
+      TOKEN="$(tr -d ' \t\r\n' < "$TOKEN_FILE")"
+      [ -n "$TOKEN" ] && return 0
+    fi
+    sleep 0.2; i=$((i + 1))
+  done
+  return 1
+}
+
+# Sends one request and prints the reply, or an honest UNAVAILABLE line.
+send() { # <json>
+  local json="$1"
+  if ! load_token; then
+    echo "UNAVAILABLE"
+    return 1
+  fi
+  rm -f "$REPLY" 2>/dev/null
+  # Escape single quotes so the payload survives the shell -c round trip.
+  local escaped=${json//\'/\'\\\'\'}
+  rish_run "am broadcast -a ${ACTION} -n ${PKG}/.testing.NexGTestReceiver --es token '${TOKEN}' --es request '${escaped}'" >/dev/null 2>&1
+  # A broadcast is fire-and-forget; give the app a moment to answer.
+  local i=0
+  while [ $i -lt 20 ]; do
+    [ -s "$REPLY" ] && break
+    sleep 0.2; i=$((i + 1))
+  done
+  if [ ! -s "$REPLY" ]; then
+    echo "UNAVAILABLE"
+    return 1
+  fi
+  cat "$REPLY"
+}
+
+field() { # <json> <key>
+  printf '%s' "$1" | sed -n "s/.*\"$2\":\"\([^\"]*\)\".*/\1/p" | head -1
+}
+
+json_text_field() { # <json> <key>
+  printf '%s' "$1" | sed -n "s/.*\"$2\":\"\([^\"]*\)\".*/\1/p" | head -1
+}
+
+# The app answers an unauthorized request rather than dropping it, so the CLI can
+# tell "your token is wrong" apart from "the app never woke up".
+is_unauthorized() { # <json>
+  case "$1" in
+    *'"errorCode":"UNAUTHORIZED"'*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+report_unauthorized() {
+  printf '%s%s%s\n' "$C_RED" "UNAUTHORIZED" "$C_RESET"
+  cat >&2 <<EOF
+  The app is installed and answered, but rejected this request's token.
+  This normally means the debug APK was reinstalled (which mints a new
+  per-install token) after the mirror was read. Re-running any nexg-test
+  command re-reads the mirror, so this should self-heal; if it persists,
+  the token file and the app's private preferences have diverged.
+EOF
+}
+
+# ------------------------------------------------------------------ commands
+
+cmd_status() {
+  printf '%s=== NexG IDE test harness status ===%s\n' "$C_BLUE" "$C_RESET"
+  if shizuku_available; then
+    printf 'shizuku            : %sREADY (rish)%s\n' "$C_GREEN" "$C_RESET"
+  elif adb_devices_attached; then
+    printf 'shizuku            : %sUNAVAILABLE (adb device attached instead)%s\n' "$C_YELLOW" "$C_RESET"
+  else
+    printf 'shizuku            : %sUNAVAILABLE%s\n' "$C_YELLOW" "$C_RESET"
+  fi
+  if adb_devices_attached; then
+    printf 'adb_device         : %sATTACHED%s\n' "$C_GREEN" "$C_RESET"
+  else
+    printf 'adb_device         : %sUNATTACHED%s\n' "$C_YELLOW" "$C_RESET"
+  fi
+
+  local reply
+  if reply="$(send '{"command":"testBuildInfo","args":{}}')" && [ "$reply" != "UNAVAILABLE" ]; then
+    if is_unauthorized "$reply"; then
+      printf 'bridge             : %sREACHABLE (unauthorized)%s\n' "$C_YELLOW" "$C_RESET"
+      report_unauthorized
+    else
+      printf 'bridge             : %sREACHABLE%s\n' "$C_GREEN" "$C_RESET"
+      printf '  shizuku_state    : %s\n' "$(json_text_field "$reply" shizukuState)"
+      printf '  editor_ready     : %s\n' "$(json_text_field "$reply" editorBridgeReady)"
+      printf '  device           : %s (API %s)\n' \
+        "$(json_text_field "$reply" deviceModel)" "$(json_text_field "$reply" apiLevel)"
+      printf '  verdict          : %s\n' "$(field "$reply" outcome)"
+    fi
+  else
+    printf 'bridge             : %sUNREACHABLE%s\n' "$C_RED" "$C_RESET"
+    printf '  the debug receiver did not answer; is the debug APK installed and running?\n'
+  fi
+
+  local device_verdict="UNAVAILABLE"
+  if adb_devices_attached || shizuku_available; then
+    device_verdict="AVAILABLE"
+  fi
+  printf '\nDEVICE VERIFICATION: %s\n' "$device_verdict"
+}
+
+cmd_launch() {
+  require_transport || return 1
+  rish_run "monkey -p ${PKG} -c android.intent.category.LAUNCHER 1" >/dev/null 2>&1 \
+    || rish_run "am start -n ${PKG}/.MainActivity" >/dev/null 2>&1
+  if [ $? -eq 0 ]; then
+    verdict_line PASS "launch requested for ${PKG}"
+  else
+    verdict_line UNAVAILABLE "could not launch ${PKG}"
+  fi
+}
+
+# Prints every per-item result line the bridge returned, then the roll-up.
+print_results() { # <json>
+  local json="$1"
+  printf '%s' "$json" \
+    | tr '{' '\n' \
+    | sed -n 's/.*"id":"\([^"]*\)".*"outcome":"\([^"]*\)".*"name":"\([^"]*\)".*/\2 \1 \3/p' \
+    | while read -r outcome id name; do
+        verdict_line "$outcome" "$id  $name"
+      done
+}
+
+run_sequence() { # <group> <label>
+  local group="$1" label="$2"
+  require_transport || return 1
+  local reply
+  reply="$(send "{\"command\":\"runSequence\",\"args\":{\"arg0\":\"${group}\"}}")"
+  if [ "$reply" = "UNAVAILABLE" ]; then
+    verdict_line UNAVAILABLE "$label: bridge unreachable"
+    return 1
+  fi
+  if is_unauthorized "$reply"; then
+    report_unauthorized
+    return 1
+  fi
+  printf '\n--- %s ---\n' "$label"
+  print_results "$reply"
+  local overall
+  overall="$(printf '%s' "$reply" | sed -n 's/.*"results":\[.*"outcome":"\([A-Z_]*\)".*/\1/p' | head -1)"
+  [ -n "$overall" ] || overall="$(field "$reply" outcome)"
+  printf '\n'
+  verdict_line "$overall" "$label OVERALL"
+}
+
+cmd_project() { run_sequence project "project checks"; }
+cmd_editor()  { run_sequence editor  "editor checks"; }
+cmd_phase4()  { run_sequence phase4  "phase4 checks"; }
+cmd_full()    { run_sequence full    "full device test run"; }
+
+cmd_report() {
+  mkdir -p "$(dirname "$REPORT")"
+  {
+    echo "NexG IDE device test report"
+    echo "================================================================"
+    echo "generated_utc : $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo "host          : $(uname -a | cut -c1-60)"
+    echo "package       : ${PKG}"
+    echo
+    echo "ENVIRONMENT"
+    echo "----------------------------------------------------------------"
+    if shizuku_available; then
+      echo "shizuku            : READY"
+    else
+      echo "shizuku            : UNAVAILABLE"
+    fi
+    if adb_devices_attached; then
+      echo "adb_device         : ATTACHED"
+    else
+      echo "adb_device         : UNATTACHED"
+    fi
+    echo
+    echo "RESULT"
+    echo "----------------------------------------------------------------"
+    echo "DEVICE VERIFICATION: UNAVAILABLE"
+    echo "SHIZUKU: UNAVAILABLE"
+    echo
+    echo "No automated device test was executed. Every check below is reported"
+    echo "as its honest state, not as a pass. The 26-step owner checklist is"
+    echo "reproduced at the end and is MANUAL_DEVICE_REQUIRED in full."
+    echo
+    echo "MANUAL DEVICE CHECKLIST (MANUAL_DEVICE_REQUIRED)"
+    echo "----------------------------------------------------------------"
+    local i=1
+    while read -r line; do
+      printf '%2d %-24s MANUAL_DEVICE_REQUIRED\n' "$i" "$line"
+      i=$((i + 1))
+    done <<'CHECKS'
+Open MainActivity.kt
+Tap editor
+Type
+Backspace/delete
+Move caret
+Long-press select
+Drag selection
+Copy
+Cut
+Paste
+Select All
+Undo
+Redo
+Multiline
+Scroll
+Search
+Replace
+Go to line
+Save
+Close
+Reopen
+Verify exact content
+Open another file
+Switch tabs
+Syntax highlighting
+Dirty indicator
+CHECKS
+  } > "$REPORT"
+  printf 'report written: %s\n' "$REPORT"
+  verdict_line PASS "report written to ${REPORT}"
+}
+
+cmd_check() {
+  # Runs the harness's own JVM unit tests, which is the only automated evidence
+  # that exists in this environment.
+  local root; root="$(cd "$(dirname "$0")/.." && pwd)"
+  ( cd "$root" && ./gradlew :app:testDebugUnitTest --rerun-tasks ) >/tmp/nexg-test-check.log 2>&1
+  if [ $? -eq 0 ]; then
+    verdict_line PASS "JVM harness tests green (see /tmp/nexg-test-check.log)"
+  else
+    verdict_line FAIL "JVM harness tests failed (see /tmp/nexg-test-check.log)"
+  fi
+}
+
+usage() {
+  sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+# ---------------------------------------------------------------------- main
+
+case "${1:-}" in
+  status)  cmd_status ;;
+  launch)  cmd_launch ;;
+  project) cmd_project ;;
+  editor)  cmd_editor ;;
+  phase4)  cmd_phase4 ;;
+  full)    cmd_full ;;
+  report)  cmd_report ;;
+  check)   cmd_check ;;
+  ""|-h|--help|help) usage ;;
+  *) echo "unknown command: $1"; echo; usage; exit 2 ;;
+esac

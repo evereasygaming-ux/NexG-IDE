@@ -1,0 +1,318 @@
+================================================================================
+NEXG IDE — PHASE 2 DEVICE BUG: "NEW PROJECT" OPENED THE OPEN-PROJECT PICKER
+================================================================================
+Date        : 2026-09-29
+Reported by : owner, manual device test of the Phase 2 APK
+Status      : FIXED in source · gates GREEN · NOT committed (awaiting owner
+              approval after manual testing)
+Commit      : none. HEAD still 1bace4a (Phase 1).
+
+================================================================================
+1. WHAT WAS REPORTED
+================================================================================
+  "Open Project"  -> SAF picker opens.   CORRECT.
+  "New Project"   -> SAF picker opens.   WRONG.
+
+  Expected order: name flow first, destination folder only if the approved SAF
+  architecture requires it, then create, persist, and open the new Explorer.
+
+================================================================================
+2. ROOT CAUSE
+================================================================================
+The intent distinction EXISTED in the code. What was missing was any user-visible
+difference, because the intent was only consulted AFTER the picker came back.
+
+Before the fix, both buttons did the same two things in the same order:
+
+    Button(onClick = { pendingPickerAction = PickerAction.OpenExisting
+                       treePicker.launch(null) })      // Open Project
+
+    OutlinedButton(onClick = { pendingPickerAction = PickerAction.ChooseNewProjectParent
+                               treePicker.launch(null) })  // New Project
+
+The enum was correct. The ORDERING was not. Tapping "New Project" launched the
+system tree picker as its very first action, so the first screen the user saw
+was byte-for-byte the same screen that "Open Project" produces. The
+`ChooseNewProjectParent` intent had no effect until the user had already come
+back from a picker they had no reason to believe belonged to creating a project.
+
+Three contributing factors, in order of how much they mattered:
+
+[1] Picker-before-name. The create flow is genuinely two steps, but it ran them
+    backwards. ProjectManager.createProject(parentTreeUri, rawName) needs BOTH a
+    name and a parent tree, and the parent tree is only obtainable from SAF — so
+    a folder picker is genuinely unavoidable. It is simply not the FIRST thing
+    that should happen. With the name prompt first, the picker is a sensible
+    second step ("now where should it go?"); with the picker first, it looks like
+    a mis-wired Open Project.
+
+[2] Deferred intent. `pendingPickerAction` was a `remember { mutableStateOf }`
+    local read only inside the activity-result callback. Nothing about the
+    create tap was observable before the round trip, so the two actions were
+    indistinguishable at the exact moment the user was deciding whether the app
+    was broken.
+
+[3] No navigation after create. The create branch showed a snackbar and stopped.
+    It never called `onOpenFiles(project.id)`, even though the open branch did.
+    So even when creation succeeded, the user was dropped back on a list and had
+    to tap the new project again to see it. That is reported step 7 failing
+    silently — the project existed, but nothing indicated that it had opened.
+
+What was NOT wrong, and was deliberately left alone:
+  - ProjectManager.createProject — correct, fully tested (20 tests).
+  - SafFsAdapter.persistTreeAccess / createDirectory — correct.
+  - The Room write — correct.
+  - Open Project — correct, and UNCHANGED by this fix.
+
+================================================================================
+3. FILES CHANGED
+================================================================================
+MODIFIED (1)
+  app/src/main/java/com/nexg/ide/ui/screens/ProjectsScreen.kt
+
+ADDED (2)
+  app/src/main/java/com/nexg/ide/ui/screens/ProjectsFlow.kt
+      New pure-Kotlin routing state machine. No Android or Compose imports
+      (verified: 0 android/androidx imports). Holds which button armed the
+      picker, whether a name is waiting for a destination, and turns a picker
+      result into exactly one of {OpenExisting, CreateProject, None}.
+
+  app/src/test/java/com/nexg/ide/ui/screens/ProjectsFlowTest.kt
+      15 regression tests. Plain JUnit + Truth, no Robolectric, no new
+      dependencies.
+
+UNTOUCHED — explicitly, per instruction
+  ProjectManager.kt              no edit
+  FileManager.kt                 no edit
+  SafFsAdapter.kt                no edit
+  NexGNavHost.kt / NavRoutes.kt  no edit
+  NameInputDialog.kt             no edit
+  everything in domain/ data/ application/ integration/
+  strings.xml                    no edit  (reused existing keys)
+  gradle/libs.versions.toml      no edit  (Room stays 2.7.1)
+  gradle.properties, settings.gradle.kts, build.gradle.kts,
+  app/build.gradle.kts           no edit
+  external <GRADLE_USER_HOME>/gradle.properties   no edit (aapt2 override intact)
+
+The five edits inside ProjectsScreen.kt, in isolation:
+  a) Replaced the two local state vars (`pendingPickerAction`,
+     `newProjectParentUri`) with a single `var flow by remember {
+     mutableStateOf(ProjectsFlow()) }`.
+  b) Picker callback rewritten to run `flow.pickerReturned(...)` and act on the
+     returned `ProjectsEffect` instead of a hand-written `when` over the enum.
+  c) Open Project button: `flow = flow.openProjectPressed()` then launch picker.
+     Unchanged in behaviour.
+  d) New Project button: `flow = flow.createProjectPressed()` and NO picker
+     launch. THIS IS THE FIX.
+  e) Name dialog now renders when `flow.nameDialogOpen`; its confirm calls
+     `flow.nameSubmitted(name)` and only THEN launches the picker. The create
+     call moved out of the dialog into the picker's effect branch, and
+     `onOpenFiles(project.id)` was added on success.
+  f) Deleted the now-unused `private enum class PickerAction`.
+  g) Screen KDoc rewritten (the old text described the Phase 1 stub and is
+     actively misleading now).
+
+================================================================================
+4. BEHAVIOUR BEFORE / AFTER
+================================================================================
+NEW PROJECT — before
+  tap "New Project"
+    -> SAF tree picker opens                       [same screen as Open Project]
+    -> user picks a folder
+    -> NameInputDialog appears (title "New Project")
+    -> user types a name, taps Create
+    -> template written, project persisted
+    -> snackbar "Created <name>"
+    -> STAYS ON THE PROJECTS LIST. Explorer never opens.
+  Two things wrong: the picker came first, and the flow ended without opening.
+
+NEW PROJECT — after
+  tap "New Project"
+    -> NameInputDialog appears immediately         [visibly NOT the open flow]
+    -> user types a name, taps Create
+    -> SAF tree picker opens, now clearly the
+       "where should it go" step
+    -> user picks the parent folder
+    -> ProjectManager.createProject(parentTreeUri, name)
+       -> persistTreeAccess(parent)
+       -> createDirectory(parent, name)
+       -> writeTemplate(projectRoot)   settings.gradle.kts, build.gradle.kts,
+                                       app/build.gradle.kts, app/src/main/...
+    -> projects.upsert(project)        Room row written
+    -> snackbar "Created <name>"
+    -> NAVIGATES TO THE NEW PROJECT'S EXPLORER   <-- now happens
+  Matches the approved flow: 1 tap, 2 name flow, 3 name entered, 4 destination
+  folder (required by the SAF architecture, because createDirectory needs a
+  parent tree and SAF cannot create a root), 5 create, 6 persist, 7 open.
+
+OPEN PROJECT — before and after: IDENTICAL.
+  tap "Open Project" -> picker -> registers/refreshes by root URI ->
+  snackbar "Opened <name>" -> navigates to Explorer.
+
+CANCEL behaviour (create), improved
+  before: cancelling the folder picker dropped the whole attempt, losing the
+          name the user had not yet typed (name was asked for afterwards, so
+          this case could not occur — but cancelling was a dead end).
+  after:  cancelling the folder picker REOPENS the name prompt with the typed
+          name still in it, so the user can retry the folder or rename.
+          No project is created. The picker result is consumed exactly once and
+          cannot be replayed into a second create.
+
+SAF, delete, and layering constraints — all still satisfied
+  SAF not removed; it is now the second step of create instead of the first.
+  No delete/remove functionality added: `removeDocument`/`deleteDocument`/
+  `.delete(` occurrences in main source = 0.
+  No bypass of ProjectManager or FileSystemPort: the UI calls
+  `projectManager.createProject(...)` and `projectManager.openExistingProject(...)`
+  and nothing else. It touches the filesystem nowhere.
+
+================================================================================
+5. TEST RESULTS
+================================================================================
+  sh gradlew :app:assembleDebug
+    BUILD SUCCESSFUL in 3m 28s        (no errors, no warnings on changed files)
+
+  sh gradlew :app:testDebugUnitTest --rerun-tasks
+    BUILD SUCCESSFUL in 4m 3s
+    (re-run for the final state: BUILD SUCCESSFUL in 5m 24s)
+
+    FileManagerTest        22   fail 0  err 0
+    ProjectManagerTest     20   fail 0  err 0
+    ProjectsFlowTest       15   fail 0  err 0   <- NEW
+    AppLoggerTest           5   fail 0  err 0
+    SecretRedactorTest     11   fail 0  err 0
+    AppResultTest          11   fail 0  err 0
+    ColorContrastTest      12   fail 0  err 0
+    ---------------------------------------------
+    TOTAL                  96   fail 0  err 0   skipped 0
+
+  81 -> 96. No existing test was modified, weakened or deleted.
+
+  git diff --check
+    CLEAN
+
+### The regression test was PROVEN to catch this bug
+
+  A test that passes both before and after a fix is worthless, so the buggy
+  behaviour was deliberately re-introduced and the suite re-run:
+
+    mutation: createProjectPressed() armed
+              ProjectsPickerIntent.OpenExisting instead of opening the name
+              prompt — i.e. exactly the reported defect
+
+    ProjectsFlowTest > createProjectPressed does not arm the tree picker  FAILED
+    ProjectsFlowTest > createProjectPressed opens the name prompt instead  FAILED
+    ProjectsFlowTest > starting a create attempt clears a previous open intent  FAILED
+    15 tests completed, 3 failed
+
+  The source was then restored byte-identical (`cmp` clean) and the full gate
+  re-run green. So these three tests are the ones that actually guard the fix.
+
+### What the tests pin down
+
+  IN  ProjectsFlowTest:
+  - createProjectPressed does not arm the tree picker
+  - createProjectPressed opens the name prompt instead
+  - openProjectPressed arms the picker without asking for a name
+  - create flow arms the parent picker only after a name is submitted
+  - create flow produces CreateProject carrying the submitted name
+  - create flow never produces OpenExisting even with a valid tree URI
+  - open flow produces OpenExisting and never CreateProject
+  - an OpenExisting intent can never yield CreateProject
+  - cancelling the parent picker reopens the name prompt with the typed name
+  - cancelling the open picker does nothing and leaves no intent armed
+  - dismissing the name prompt clears the create attempt entirely
+  - a picker result is consumed once and cannot be replayed
+  - a picker result with no pending intent is ignored
+  - a parent picker result with no submitted name does not create anything
+  - starting a create attempt clears a previous open intent
+
+  The last one matters for a specific reason: `pendingPicker` is remembered state
+  that survives a configuration change. A stale OpenExisting intent left over
+  from an abandoned attempt would otherwise be able to fire on a later result.
+
+================================================================================
+6. DEVICE VERIFICATION — NOT DONE
+================================================================================
+  NOT verified on a device. No device was reachable:
+
+    $ adb devices
+    List of devices attached
+                                (empty)
+
+    emulator binary             not installed
+    host is Termux + proot Ubuntu, not a device
+
+  The fix is therefore supported by compilation, by 96 JVM tests, and by the
+  mutation proof above — and by nothing else. It has NOT been seen working on
+  screen. Owner's manual test on the APK below is the real verification, and it
+  is the reason the commit is on hold.
+
+  Specific things a device run is still needed to confirm, which no JVM test
+  can cover:
+  - the name prompt actually renders and is reachable by tap
+  - the SAF picker accepts the parent folder and returns a persistable tree URI
+  - the template files are really written through a real document provider
+    (the fake FileSystemPort in the tests cannot model provider quirks)
+  - the navigation to Explorer fires with a project id the Files route accepts
+  - whether the provider rejects any of the template's create/write calls, which
+    is the failure mode the tests are least able to predict
+
+================================================================================
+7. APK
+================================================================================
+  /sdcard/Download/NexG-IDE-0.1.0-phase2-createfix-debug.apk
+
+    17,122,707 bytes
+    md5    b65cc485408c8ef79a8f22903ab2d50e
+    sha256 7f7143f039bb2ad14c29433c439a0d3b4afc0061ce4c85a11dbaebb5e8bb8aaf
+    com.nexg.ide / 0.1.0-phase2 / versionCode 1 / targetSdk 36 / compileSdk 36
+    launchable activity com.nexg.ide.MainActivity
+    Room 2.7.1 (unchanged by this fix)
+
+  A NEW filename was used deliberately. /sdcard/Download/NexG-IDE-0.1.0-phase2-debug.apk
+  is the build that was manually tested and found buggy, so it was left exactly
+  as it was rather than overwritten — it stays as the owner's reference for
+  "before". The two are otherwise identical apart from this fix.
+
+  MANUALLY TEST THIS ONE:
+    /sdcard/Download/NexG-IDE-0.1.0-phase2-createfix-debug.apk
+
+================================================================================
+8. RESIDUAL RISK / KNOWN GAPS
+================================================================================
+  - Not device-tested. See section 6.
+  - The tests cover the STATE MACHINE, not the Compose wiring. The button
+    lambdas are thin (`flow = flow.createProjectPressed()` vs
+    `flow = flow.openProjectPressed()`) but nothing mechanically stops a future
+    copy-paste from wiring the New Project button to the open transition. Closing
+    that would need compose-ui-test or Robolectric — a new dependency, which
+    conflicts with the instruction to make no unrelated changes, so it was not
+    done. This is the honest limit of the coverage.
+  - The name is still not pre-validated in the dialog. That is deliberate and
+    pre-existing: NameValidator in the manager is the single source of truth, and
+    duplicating its rules in the UI would create a second drifting definition. A
+    bad name therefore costs a full round trip through the picker before being
+    rejected. Worth revisiting, not part of this bug.
+  - Cancelling the folder picker reopens the name prompt. That is a behaviour
+    change relative to "cancel the whole flow", and is a judgement call. If
+    cancelling should abort entirely instead, it is a one-line change in
+    `pickerReturned`.
+  - The created project opens on success only. On failure the user stays on the
+    Projects screen with a snackbar, which is correct: there is nothing to open.
+
+================================================================================
+9. Handoff
+================================================================================
+  AWAITING OWNER
+    Manual test of the createfix APK.
+    COMMIT. Nothing committed. Prepared message unchanged:
+        feat(phase2): add project management and file explorer
+
+  ON APPROVAL
+    Commit, then update OPENCODE.MD to Entry 009 and re-copy the APK over the
+    plain phase2 name so the "latest" artefact matches the committed source.
+
+================================================================================
+END OF REPORT
+================================================================================

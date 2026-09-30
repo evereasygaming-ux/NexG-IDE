@@ -1,0 +1,246 @@
+================================================================================
+NEXG IDE — ROOM VERSION DECISION TEST (2.6.1  vs  2.7.1)
+================================================================================
+Date        : 2026-09-29
+Purpose     : Settle the PROVISIONAL Room version, with a controlled test that
+              changes exactly one thing and nothing else.
+Verdict     : 2.7.1 PASSES ALL GATES  ->  2.7.1 KEPT
+Commit      : NOT made. Awaiting owner confirmation (owner instruction step 10).
+Supersedes  : the "Room 2.6.1 provisional" note in
+              NexG-Phase2-report.txt section 9 and OPENCODE.MD Entry 007.
+
+================================================================================
+1. WHAT CHANGED — exactly one line
+================================================================================
+  File  gradle/libs.versions.toml
+  Line  12
+
+    -  room = "2.6.1"
+    +  room = "2.7.1"
+
+  Proof it was the ONLY change. `git diff` against HEAD is misleading here:
+  the entire Room addition is still uncommitted, so git reports +8/-0 and shows
+  all seven Room lines. The authoritative proof is a byte-diff against a copy
+  taken immediately before the edit:
+
+    $ diff libs.versions.toml.before gradle/libs.versions.toml
+    12c12
+    < room = "2.6.1"
+    ---
+    > room = "2.7.1"
+
+  One line. No other byte moved in that file, and no other file was written.
+
+  libs.versions.toml sha256
+    before  cc9b2c2586924716fecfc733e5acfd737af898edd03ea0168fc3267abccdeedd
+    after   83482ace95b4d65aa130381e76a7f43d7cd23c04a59200800a94d3a6a0a8d97f
+
+  Deliberately left untouched — KSP itself, and all four Room aliases:
+    ksp   = "2.1.0-1.0.29"                                    UNCHANGED
+    androidx-room-runtime  { ... version.ref = "room" }
+    androidx-room-ktx     { ... version.ref = "room" }
+    androidx-room-compiler { ... version.ref = "room" }
+    androidx-room-testing  { ... version.ref = "room" }
+  All four already used version.ref = "room", so the single edit moved the whole
+  Room stack and nothing else. No alias was hardcoded to 2.6.1.
+
+================================================================================
+2. PROTECTED STATE — verified untouched AFTER the test
+================================================================================
+  13cca87c771bb38262263e8518a07a81ac0a8d5c03dbf5514404da6b4bb0c906  gradle.properties
+  2f93885c8d30107f66f4544b4d5e8782f6a46ea887b45e105d25af3d34407f95  settings.gradle.kts
+  7af865aea3e2dde810363caa1c3f9eed33324aa47f1c7e281034d4bd69129b3d  build.gradle.kts
+  4422d43d71da05631f17d0c795a19950652ea79d14ff697fe89605641ce315e8  app/build.gradle.kts
+  34f8b05f882f5b16e0c4e3190eee549f6ec25c48dd731f0937f8f3eedec83450  <GRADLE_USER_HOME>/gradle.properties
+
+  All five identical to the pre-test baseline. RAM settings (Xmx768m,
+  MaxMetaspace 384m, workers 1, parallel false, kotlin in-process), the external
+  aapt2 override, and every other build setting are exactly as they were.
+
+  Source code: 0 files changed. No architecture change. No JDK change.
+  git status --short: 16 changed paths BEFORE the test, 16 AFTER — identical set.
+
+  Build environment held constant for every run:
+    export JAVA_HOME=/usr/lib/jvm/java-21-openjdk-arm64
+    export GRADLE_USER_HOME=/data/data/com.termux/files/home/.gradle
+    openjdk 21.0.12.1 2026-08-18, Ubuntu 26.04 build 21.0.12.1+1-1~26.04.4
+    sh gradlew   (never ./gradlew — /sdcard is noexec)
+
+================================================================================
+3. GATE RESULTS — 2.7.1
+================================================================================
+STEP 4  sh gradlew :app:assembleDebug
+        BUILD SUCCESSFUL in 6m 34s   exit 0
+        38 actionable tasks: 10 executed, 1 from cache, 27 up-to-date
+
+STEP 5  sh gradlew :app:testDebugUnitTest --rerun-tasks
+        BUILD SUCCESSFUL in 5m 17s   exit 0
+        26 actionable tasks: 26 executed  (no task skipped as up-to-date)
+
+STEP 6  git diff --check
+        CLEAN — no whitespace problems, no conflict markers
+
+        git status --short
+          M OPENCODE.MD
+          M app/build.gradle.kts
+          M app/src/main/java/com/nexg/ide/NexGApp.kt
+          M app/src/main/java/com/nexg/ide/ui/nav/NavRoutes.kt
+          M app/src/main/java/com/nexg/ide/ui/nav/NexGNavHost.kt
+          M app/src/main/java/com/nexg/ide/ui/screens/ProjectsScreen.kt
+          M app/src/main/res/values/strings.xml
+          M gradle/libs.versions.toml
+         ?? app/src/main/java/com/nexg/ide/application/
+         ?? app/src/main/java/com/nexg/ide/data/
+         ?? app/src/main/java/com/nexg/ide/domain/
+         ?? app/src/main/java/com/nexg/ide/integration/
+         ?? app/src/main/java/com/nexg/ide/ui/components/NameInputDialog.kt
+         ?? app/src/main/java/com/nexg/ide/ui/screens/ExplorerScreen.kt
+         ?? app/src/main/java/com/nexg/ide/ui/screens/MissingProjectScreen.kt
+         ?? app/src/test/java/com/nexg/ide/application/
+        16 paths — same set as before the test. No stray file created.
+
+        aapt2 dump badging app/build/outputs/apk/debug/app-debug.apk
+          package: name='com.nexg.ide' versionCode='1'
+                   versionName='0.1.0-phase2'
+                   compileSdkVersion='36' platformBuildVersionCode='36'
+          targetSdkVersion:'36'
+          launchable-activity: name='com.nexg.ide.MainActivity' label='NexG IDE'
+        Identical to the 2.6.1 APK. No manifest, launcher, or versionCode drift.
+
+TESTS  parsed from the JUnit XML, not from Gradle's summary line:
+          FileManagerTest        22   fail 0  err 0
+          ProjectManagerTest     20   fail 0  err 0
+          AppLoggerTest           5   fail 0  err 0
+          SecretRedactorTest     11   fail 0  err 0
+          AppResultTest          11   fail 0  err 0
+          ColorContrastTest      12   fail 0  err 0
+          ---------------------------------------------
+          TOTAL                  81   fail 0  err 0   skipped 0
+        Identical class-for-class to the 2.6.1 run. 2.7.1 introduced no
+        behavioural change in any tested code path.
+
+================================================================================
+4. ONE REAL DIFFERENCE FOUND — generated code switches Java -> Kotlin
+================================================================================
+  This is the only substantive difference between the two versions in this
+  codebase, and it is worth recording because it looks like a failure if you are
+  not expecting it.
+
+  Room 2.6.1  ->  app/build/generated/ksp/debug/java/.../NexGDatabase_Impl.java
+  Room 2.7.1  ->  app/build/generated/ksp/debug/kotlin/.../NexGDatabase_Impl.kt
+
+  2.7.x generates Kotlin by default. So a search for NexGDatabase_Impl.java
+  returns nothing under 2.7.1. That is NOT a build failure and NOT a missing
+  file — the impl moved to .kt. Phase 2 documentation referred to
+  NexGDatabase_Impl.java and is now stale on that detail.
+
+  Generated impls present after the 2.7.1 run (regenerated 12:21:44, minutes
+  before the final gate, so they are not stale 2.6.1 leftovers):
+    NexGDatabase_Impl.kt
+    ProjectDao_Impl.kt
+    RecentFileDao_Impl.kt
+  Exactly the three @Database / @Dao types this project declares. No unexpected
+  extra generated types.
+
+  Compiled artefacts present, confirming the Kotlin impl is really used:
+    app/build/tmp/kotlin-classes/debug/com/nexg/ide/data/db/NexGDatabase_Impl.class
+    app/build/intermediates/project_dex_archive/.../NexGDatabase_Impl.dex
+
+  This is a downgrade in diff-noise (generated Kotlin is reviewed by humans;
+  generated Java is not), and it removes the Java-source leg of the build. It is
+  not a risk for this project — the whole data layer is already Kotlin, and the
+  81 tests exercise the repositories through interfaces, not generated code.
+
+================================================================================
+5. THE ORIGINAL 2.7.1 FAILURE WAS NEVER ABOUT ROOM
+================================================================================
+  2.7.1 was originally rejected with:
+
+    :app:kspDebugKotlin
+      androidx.room.processor.DatabaseProcessor
+        -> androidx.room.verifier.DatabaseVerifier.<clinit>
+          -> No native library found for os.name=Linux, os.arch=aarch64
+
+  That was a FALSE ATTRIBUTION. The real cause was the runtime, not the version:
+  the build was running the Termux JDK (bionic) on a proot Ubuntu/glibc
+  filesystem, so org.sqlite.JDBC could not dlopen its native library —
+
+    UnsatisfiedLinkError: ...libsqlitejdbc.so: dlopen failed:
+      library "libm.so.6" not found
+
+  Isolated proof, outside Gradle: with the Ubuntu JDK on PATH this works. Also
+  both cached compiler jars carry the same verifier and the same pinned
+  sqlite-jdbc 3.41.2.2, and neither offers any option to skip verification:
+
+    room-compiler-2.6.1.jar  ->  verifier/DatabaseVerifier PRESENT
+    room-compiler-2.7.1.jar  ->  verifier/DatabaseVerifier PRESENT
+    both                    ->  org.xerial:sqlite-jdbc:3.41.2.2
+
+  So no Room version could ever have passed under the Termux JDK, and 2.6.1 only
+  started working once the JDK was fixed. This test closes the loop: with the
+  correct JDK, 2.7.1 — the version that was blamed and abandoned — passes both
+  gates with the full 81 tests. The 2.6.1 pin was a workaround for the wrong
+  diagnosis and is now obsolete.
+
+================================================================================
+6. APK IDENTITY — 2.7.1 vs 2.6.1
+================================================================================
+  2.6.1  17,016,645 bytes
+         md5    dde339adc0bba25b8ae08311744a50ed
+         sha256 a9889c9b0fe17371af3fe10dbabbeccd086cdab0219e20d128f4d0b06f5bc1ea
+
+  2.7.1  17,122,707 bytes   (+106,062 bytes, +0.6%)
+         md5    2726f26c4c45100e694c03f8f4643624
+         sha256 12a6e27bffcffaab7952da2f5af07862688c55ae7e74db595ed7c849f79acf25
+
+  Same package, same versionName, same versionCode, same launcher. The size
+  delta is the 2.7.x KMP runtime/room-common plus the Kotlin-generated impl.
+  NOTE: the APK currently sitting in /sdcard/Download/ is still the 2.6.1 build.
+  See the handoff note below before shipping an APK.
+
+================================================================================
+7. RESIDUAL RISK — unchanged by this test
+================================================================================
+  * Both versions were exercised on the JVM and in a debug build only.
+    No release build, no device run, no instrumented test, no migration test.
+  * exportSchema = false in BOTH versions. room.schemaLocation must be enabled
+    before the first schema change or the migration cannot be diffed afterwards.
+    Nothing about this test makes the schema story safer; it is unchanged.
+  * Choosing 2.7.1 means a newer Room whose future minor releases will keep
+    moving (and 2.7.x already has a different artifact layout — see section 4).
+    2.6.1 is the conservative pin. The trade is: 2.7.1 is the version this
+    project was originally meant to be on, passes today, and is better supported
+    going forward; 2.6.1 is only defensible as "pin what is proven older".
+  * No behavioural difference was observed in any test. But "no test failed" is
+    not "no behavioural difference" — the 81 tests do not exercise Room
+    migrations, multi-instance invalidation, or Flow query semantics specifically.
+
+================================================================================
+8. HANDOFF / OPEN ITEMS
+================================================================================
+  DONE
+    Room pinned to 2.7.1 in gradle/libs.versions.toml
+    assembleDebug          GREEN
+    testDebugUnitTest      GREEN  (81/81, rerun-tasks, all executed)
+    git diff --check       CLEAN
+    git status --short     16 paths, unchanged set
+    aapt2 badging          identical manifest/identity to 2.6.1
+    OPENCODE.MD            updated, Entry 008
+
+  STILL AWAITING OWNER
+    COMMIT. Nothing has been committed. Prepared message unchanged:
+        feat(phase2): add project management and file explorer
+
+  NEEDS A DECISION (flagged, not acted on)
+    /sdcard/Download/NexG-IDE-0.1.0-phase2-debug.apk is the 2.6.1 build
+    (md5 dde339adc0bba25b8ae08311744a50ed) and was NOT overwritten, because the
+    instruction was to record results in a separate report and not to make
+    unrelated changes. It no longer matches the repo. Confirm whether to
+    replace it with the 2.7.1 build (md5 2726f26c4c45100e694c03f8f4643624).
+    NexG-Phase2-report.txt section 9 and section 1 still cite the 2.6.1 APK
+    hash and call the version provisional. This report supersedes those two
+    points; the main report was not edited, to keep this test isolated.
+
+================================================================================
+END OF REPORT
+================================================================================

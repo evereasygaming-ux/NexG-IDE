@@ -28,14 +28,25 @@ gradle.properties.local
 *.keystore
 *.jks
 *.p12
+*.pkcs12
 *.pem
+*.key
 keystore.properties
 signing.properties
 secrets.properties
 .env
 .env.*
+.envrc
 secrets.xml
 local.properties.bak
+
+# ---- Shizuku test harness runtime artifacts (CONTAIN A LIVE TOKEN) ----
+# The harness mints a per-install 128-bit authorization token and the CLI reads
+# it from this file. It is written to the app-private device dir
+# (/sdcard/Android/data/<pkg>/files/nexg-test/), not the repo, but if a run is
+# ever redirected here it must still never be committed.
+nexg-test-token.txt
+nexg-test-reply.json
 
 # ---- IDE ----
 *.iml

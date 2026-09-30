@@ -9,7 +9,19 @@ navigationCompose = "2.8.5"
 coroutines = "1.9.0"
 junit = "4.13.2"
 truth = "1.4.4"
-
+room = "2.7.1"
+ksp = "2.1.0-1.0.29"
+okhttp = "4.12.0"
+serializationJson = "1.7.3"
+securityCrypto = "1.1.0"
+# Shizuku, DEBUG-ONLY (see app/build.gradle.kts -> debugImplementation).
+# 13.1.5 is the newest version of the *API artifact* published to Maven Central
+# (dev.rikka.shizuku:api / :provider, verified against
+# repo1.maven.org/maven2/dev/rikka/shizuku/api/maven-metadata.xml, whose <release>
+# is 13.1.5) and is the version documented by the official repository
+# RikkaApps/Shizuku-API. Do NOT confuse this with the Shizuku *app* release
+# (currently v13.6.0): the app and the API artifact version independently.
+shizuku = "13.1.5"
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
 androidx-lifecycle-runtime-ktx = { group = "androidx.lifecycle", name = "lifecycle-runtime-ktx", version.ref = "lifecycle" }
@@ -30,6 +42,20 @@ androidx-compose-material-icons-extended = { group = "androidx.compose.material"
 kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "coroutines" }
 kotlinx-coroutines-test = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-test", version.ref = "coroutines" }
 
+androidx-room-runtime = { group = "androidx.room", name = "room-runtime", version.ref = "room" }
+androidx-room-ktx = { group = "androidx.room", name = "room-ktx", version.ref = "room" }
+androidx-room-compiler = { group = "androidx.room", name = "room-compiler", version.ref = "room" }
+androidx-room-testing = { group = "androidx.room", name = "room-testing", version.ref = "room" }
+
+okhttp = { group = "com.squareup.okhttp3", name = "okhttp", version.ref = "okhttp" }
+okhttp-mockwebserver = { group = "com.squareup.okhttp3", name = "mockwebserver", version.ref = "okhttp" }
+kotlinx-serialization-json = { group = "org.jetbrains.kotlinx", name = "kotlinx-serialization-json", version.ref = "serializationJson" }
+androidx-security-crypto = { group = "androidx.security", name = "security-crypto", version.ref = "securityCrypto" }
+
+# Shizuku — debug/test infrastructure ONLY. Never move these to `implementation`.
+shizuku-api = { group = "dev.rikka.shizuku", name = "api", version.ref = "shizuku" }
+shizuku-provider = { group = "dev.rikka.shizuku", name = "provider", version.ref = "shizuku" }
+
 junit = { group = "junit", name = "junit", version.ref = "junit" }
 truth = { group = "com.google.truth", name = "truth", version.ref = "truth" }
 
@@ -37,3 +63,5 @@ truth = { group = "com.google.truth", name = "truth", version.ref = "truth" }
 android-application = { id = "com.android.application", version.ref = "agp" }
 kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
 kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
+kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
+ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }

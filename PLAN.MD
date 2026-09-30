@@ -272,6 +272,30 @@ a full LSP — that is a desktop-class problem).
 **Languages, priority order (spec §3):** Kotlin → Java → XML → Gradle → JSON →
 Markdown → Shell. Extensible via `LanguageDefinition`; adding one is one file.
 
+> **Implementation note (2026-09-30, Entry 014):** the editing surface is
+> **CodeMirror 6 in an offline WebView**, not a Compose text field — the Compose
+> surface could not deliver tap-to-caret, long-press handles or copy/select-all on
+> device. Kotlin still owns SAF, load/save, dirty state, tabs, goto-line, status
+> line and the 2 MB rule; CodeMirror owns typing, selection, history, autocomplete
+> and the find panel. Bridge is a whitelisted JSON channel in
+> `ui/editor/webview/`, and the JS bundle is built by `editor-assets/` (not
+> committed to the runtime path by hand). A native `LanguageDefinition` still
+> decides the language id; `EditorLanguageMapping` maps it to a CodeMirror mode.
+
+> **Implementation note (2026-09-30, Entry 015):** on-device testing runs through a
+> **debug-only harness** in `app/src/debug/` (`com.nexg.ide.testing`), reachable from
+> Termux over Shizuku's shell. It is allowlisted (21 named commands, per-command arg
+> schemas, no string dispatch) and every operation reports an honest
+> `PASS`/`FAIL`/`UNAVAILABLE`/`UNSUPPORTED`/`MANUAL_DEVICE_REQUIRED` — an unavailable
+> check is never rendered as a pass. The receiver must stay `exported` because the
+> shell cannot hold a signature permission, so it is instead gated by a **per-install
+> token** (128-bit `SecureRandom`, constant-time compare, checked before the allowlist).
+> Shizuku is `debugImplementation` only; release APK me koi test code, test component
+> ya Shizuku dependency nahi hai (APK DEX se verify kiya gaya, source se nahi).
+> Entry 015 tak `TestController` ka device-side wiring abhi placeholder hai — real
+> editor/project operations register karne baaki hain.
+
+
 ## 4.4 Terminal (Tier 2)
 Talks to the existing Termux environment. **Does not recreate a Linux userspace.**
 Input, stdout/stderr streaming, process state, history, working directory,

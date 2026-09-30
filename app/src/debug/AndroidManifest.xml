@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  DEBUG-VARIANT MANIFEST.
+
+  This file is merged into the debug APK ONLY. Nothing declared here exists in
+  a release build, which is how "the release APK must not contain a test bridge
+  or a Shizuku dependency" is satisfied structurally rather than by convention.
+
+  The receiver below is exported so the Termux CLI can reach it through
+  Shizuku's shell (`am broadcast`). A signature permission is not an option here
+  because the shell cannot hold one, so the export is instead guarded by a
+  per-install token (com.nexg.ide.testing.HarnessToken): another app may address
+  the component, but it cannot mint the token, so every request it sends is
+  rejected before the allowlist is even consulted. The receiver additionally
+  refuses to answer unless BuildConfig.DEBUG and BuildConfig.TEST_HARNESS are
+  both true, and every command it will run is allowlisted in
+  com.nexg.ide.testing.TestCommandSpec.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application>
+
+        <!--
+          Cold-start path for the harness. It gives the receiver a Context graph
+          in a process that has never been started, and it is where the
+          per-install token is minted and mirrored to shell-readable storage so
+          the CLI can obtain it. This is what makes the receiver reachable, not
+          a separate Application subclass: the main Application is untouched, and
+          a debug Application would mean a second one to keep in sync.
+        -->
+        <activity
+            android:name=".testing.NexGTestBootActivity"
+            android:exported="false"
+            android:noHistory="true"
+            android:excludeFromRecents="true"
+            android:theme="@android:style/Theme.NoDisplay" />
+
+        <receiver
+            android:name=".testing.NexGTestReceiver"
+            android:exported="true"
+            android:enabled="true">
+            <intent-filter>
+                <action android:name="com.nexg.ide.TEST_REQUEST" />
+            </intent-filter>
+        </receiver>
+
+    </application>
+
+</manifest>

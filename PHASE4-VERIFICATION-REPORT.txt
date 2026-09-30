@@ -1,0 +1,110 @@
+PHASE 4 VERIFICATION REPORT — NexG IDE (Tier-1 AI integration)
+Date: 2026-09-30
+Scope: AiBackend (Gemini SSE + BYOK), CredentialStore, DeveloperToolPort,
+      AtlassianCliAdapter boundary, real AiScreen/SettingsScreen.
+
+======================================================================
+1. GATE — FULL UNIT SUITE (JVM, rerun-tasks)
+======================================================================
+Command: sh gradlew :app:testDebugUnitTest --rerun-tasks
+Result : BUILD SUCCESSFUL
+
+Total tests: 437 | failures: 0 | errors: 0 | skipped: 0
+
+By suite:
+  application.EditorManagerTest        41   0
+  application.FileManagerTest          22   0
+  application.ProjectManagerTest       30   0
+  application.ProjectTemplateTreeTest  26   0
+  core.log.AppLoggerTest                5   0
+  core.log.SecretRedactorTest          11   0
+  core.result.AppResultTest            11   0
+  domain.editor.EditorBufferTest       26   0
+  domain.editor.EditorLogicTest        41   0
+  domain.editor.EditorTextDiffTest     22   0
+  domain.editor.EditorTokenizerTest    27   0
+  domain.uri.SafUriTest                23   0
+  integration.atlassian.AtlassianCliAdapterTest   7   0
+  integration.gemini.GeminiBackendTest  9   0
+  integration.gemini.GeminiStreamTest  10   0
+  integration.gemini.PromptBuilderTest 10   0
+  ui.ai.AiViewModelTest                 5   0
+  ui.editor.EditorInteractionTest      47   0
+  ui.editor.EditorTextEditsTest        26   0
+  ui.nav.EditorUriHandoffTest          11   0
+  ui.screens.ProjectsFlowTest          15   0
+  ui.theme.ColorContrastTest           12   0
+
+Phase 4 new: 12 files / 41 tests (Phase-3 gate 396 -> 437).
+
+======================================================================
+2. GATE — APK BUILD
+======================================================================
+Command: sh gradlew :app:assembleDebug
+Result : BUILD SUCCESSFUL
+
+APK     : app/build/outputs/apk/debug/app-debug.apk
+Size    : 18,943,674 bytes
+Built   : 2026-09-30 03:06
+md5     : 42cfc6bfaf925b90fbe863d9a66ea39c
+sha256  : 7cb0edbc992a995fa11d535c9660d6444da9ac8610b25598db67c3dbccba8170
+
+Badging (aapt2 dump badging):
+  package      : com.nexg.ide
+  versionCode  : 1
+  versionName  : 0.1.0-phase2-3
+  compileSdk   : 36
+  targetSdk    : 36
+  minSdk       : 26
+  native-code  : arm64-v8a, armeabi-v7a, x86, x86_64
+  permissions  : INTERNET, com.nexg.ide.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION
+
+======================================================================
+3. PHASE 4 REQUIREMENTS CHECK
+======================================================================
+[ x ] AiBackend contract (domain/port)                    AiBackend.kt
+[ x ] Gemini SSE streaming, no key in logs/URL             GeminiBackend.kt,
+                                                           GeminiStream.kt,
+                                                           SecretRedactor
+[ x ] Key via header only (x-goog-api-key), never query    GeminiBackend.kt
+      -> GeminiBackendTest: "key travels in a header"
+[ x ] No key stored -> SECURITY error WITHOUT network      GeminiBackend.kt
+      -> GeminiBackendTest: "no key means no request"
+[ x ] Health: 200 authorized / 400-403 reachable+unauth   GeminiBackend.kt
+      / IOException unreachable; tested via MockWebServer
+[ x ] BYOK credentials, Keystore-backed                   data/local/SecurePrefs.kt
+[ x ] CredentialStore port + CredentialKey                 domain/port/CredentialStore.kt
+[ x ] ExecutorPort + ProcessEvent                          domain/port/ExecutorPort.kt
+[ x ] DeveloperToolPort (ISSUE_QUERY/FETCH/COMMAND,        domain/port/DeveloperToolPort.kt
+      Unavailable event)
+[ x ] AtlassianCliAdapter: no acli / null executor ->     integration/atlassian/AtlassianCliAdapter.kt
+      graceful Unavailable, no binary in APK
+[ x ] AiScreen real states (NO_KEY/OK/KEY_REJECTED/       ui/screens/AiScreen.kt
+      UNREACHABLE/CHECKING/ERROR), prompt disabled
+[ x ] Settings BYOK save/clear/test connection,           ui/screens/SettingsScreen.kt
+      dev-tools status row
+[ x ] AiViewModel + factory + in-flight guard              ui/ai/AiViewModel.kt
+[ x ] NavHost wires Ai/Settings with keyed viewModels      ui/nav/NexGNavHost.kt
+[ x ] No Jira networking in GeminiBackend                  (port-style isolation)
+[ x ] No fake tool/assistant behavior                      (Unavailable reported honestly)
+[ x ] INTERNET permission present with Tier-1 comment      AndroidManifest.xml
+[ x ] git diff --check                                     CLEAN
+
+Dependency additions (documented in OPENCODE.MD Entry 013):
+  okhttp 4.12.0, kotlinx-serialization-json 1.7.3,
+  androidx-security-crypto 1.1.0 (deprecation documented),
+  kotlin-serialization plugin 2.1.0, okhttp-mockwebserver (test).
+  Version matrix otherwise unchanged.
+
+======================================================================
+4. REMAINING / NOT VERIFIED HERE
+======================================================================
+[ ] DEVICE retest (no reachable ADB in this environment):
+    - Settings: save key (Keystore), Test connection, clear key
+    - AiScreen status transitions on real network
+    - Phase 3 editor handoff retest (open a project file)
+[ ] Apache-2.0 LICENSE reference check (historical, unchanged)
+[ ] Commit: HOLD — none made; owner approval pending after device retest.
+
+======================================================================
+```

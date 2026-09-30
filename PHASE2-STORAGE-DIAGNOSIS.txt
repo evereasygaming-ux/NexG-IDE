@@ -1,0 +1,414 @@
+================================================================================
+NEXG IDE — PHASE 2 STORAGE DIAGNOSIS
+"New Project" exposes the system picker as the app's file explorer, and then
+fails with "Could not read or write local storage"
+================================================================================
+Date    : 2026-09-29
+Status  : DIAGNOSIS ONLY. No source changed for this document. Implementation of
+          the minimal fix follows as a separate, clearly-marked step.
+Commit  : none. HEAD still 1bace4a.
+
+Evidence base: PLAN.MD (single source of truth), AndroidManifest.xml,
+ProjectsScreen.kt, ExplorerScreen.kt, ProjectsFlow.kt, ProjectManager.kt,
+FileManager.kt, SafFsAdapter.kt, ProjectTemplate.kt, RoomProjectRepository.kt,
+ProjectDao.kt, ProjectEntity.kt, NexGDatabase.kt, AppResult.kt, LogSink.kt,
+AppLogger.kt, NexGNavHost.kt, and the 8 existing test files.
+
+================================================================================
+0. WHAT WAS RULED OUT FIRST
+================================================================================
+Ruled out, with evidence, before forming any hypothesis:
+
+  NOT a missing manifest permission.
+    $ grep uses-permission app/src/main/AndroidManifest.xml
+    1 line, and it is INTERNET.
+    There is no READ/WRITE_EXTERNAL_STORAGE, no MANAGE_EXTERNAL_STORAGE, no
+    all-files-access, nothing. So this is not a runtime permission that was
+    forgotten to declare, and adding one would be wrong — PLAN.MD 8.1 states
+    Tier 1 needs "SAF permission + BYOK key only".
+
+  NOT a broad-storage-permission problem at all.
+    The error text is the app's OWN string, not a platform message.
+    app/src/main/java/com/nexg/ide/core/result/AppResult.kt:42
+        Kind.IO -> "Could not read or write local storage"
+    It is produced by AppError.describe(). Android never said this. So the
+    platform did not deny anything on the app's behalf; the app decided to
+    report Kind.IO and then rendered a generic sentence.
+
+  NOT "SAF picker is a file browser because SAF is broken".
+    OpenDocumentTree IS a file browser. That is a platform fact: SAF has no
+    "pick-or-create a folder" contract. So the picker showing a browsable tree
+    is expected behaviour of the contract, not a defect in it. The defect is
+    what the app does AROUND it (see RC-5).
+
+================================================================================
+1. THE FINDING THAT MAKES THE VIDEO UNDIAGNOSABLE
+================================================================================
+Every Kind.IO failure in the entire create path renders as ONE identical
+sentence. There are ELEVEN distinct sites that can produce it:
+
+  ProjectManager.kt:54    project id not registered
+  ProjectManager.kt:71    no directory selected
+  ProjectManager.kt:137   no parent directory selected
+  ProjectManager.kt:193   refreshLayout on unknown project
+  ProjectManager.kt:310   template needs a directory, found a file
+  ProjectManager.kt:332   template directory vanished mid-write
+  SafFsAdapter.kt:287     FileNotFoundException      -> "Not found: <uri>"
+  SafFsAdapter.kt:295     IOException                -> "Storage error: <uri>"
+  FileManager.kt:43       no directory selected
+  FileManager.kt:193      could not clear recent files
+  AppResult.kt:42         the single shared sentence
+
+So the screen tells the user, and told the owner on video, the same thing
+whether the failure was "the provider would not create the directory",
+"the project row was not written", or "the file could not be opened for
+writing". Those need three completely different fixes.
+
+Two further facts make it worse:
+
+  a) AppResult.kt's own KDoc and ProjectsScreen's describeToUser() KDoc both
+     say the specific `message` is deliberately NOT rendered because it can
+     embed a tree URI. So the specific step is suppressed on purpose and there
+     is no other channel for it.
+
+  b) SafFsAdapter.kt:281-298 maps exceptions to AppError and DISCARDS the
+     original message into `message`, then describe() throws that away too. The
+     cause Throwable is retained on AppError.cause, but the UI never looks at
+     it and the app has no in-app log viewer wired to it.
+
+  Net effect: the exact failure point CANNOT be recovered from the UI. Any
+  attempt to name the failing step from the video alone would be a guess, and
+  the owner explicitly asked for it not to be treated as a permission problem.
+  So the first necessary fix is to make the step observable.
+
+================================================================================
+2. RANKED ROOT CAUSES
+================================================================================
+--------------------------------------------------------------------------------
+RC-1  LEADING HYPOTHESIS (strong evidence, NOT yet proven on a device)
+     persistTreeAccess() silently downgrades a refused WRITE grant to
+     read-only and then reports success.
+--------------------------------------------------------------------------------
+  SafFsAdapter.kt:46-64
+
+      resolver.takePersistableUriPermission(uri, READ or WRITE)   // throws
+      catch (_: SecurityException) {
+          resolver.takePersistableUriPermission(uri, READ)        // succeeds
+      }
+      uri.toString()                                              // Success either way
+
+  If the chosen location only grants read — a real and common case for SD
+  cards, USB OTG volumes, some cloud providers, and volumes the user mounted
+  read-only — the first call throws, the fallback succeeds, and the adapter
+  returns Success as if a writable tree had been granted. Nothing anywhere
+  records that the downgrade happened.
+
+  Control then flows to ProjectManager.createProject, which calls
+  createDirectory on a read-only volume. DocumentsContract.createDocument
+  returns null, the adapter throws
+  IOException("Provider refused to create directory <name>")  (line 99/112),
+  saf() maps IOException to Kind.IO (line 295), and describe() renders
+  "Could not read or write local storage".
+
+  Why this is the leading hypothesis and not a conclusion:
+    - It reproduces the EXACT observed string.
+    - It is a real defect in the code, not a theory about the device.
+    - The test suite already models this failure mode:
+        ProjectManagerTest.kt:209
+          fileSystem.failOn("create", AppError(Kind.IO, "read-only volume"))
+        i.e. the tests assume a read-only volume surfaces as Kind.IO — and
+        production has no way to signal "read-only" at all.
+    - BUT nothing in the current code logs the grant outcome, so it cannot be
+      confirmed or refuted from the device run that was recorded. It is the
+      best explanation available, not a proven fact.
+
+  Competing candidate NOT ruled out: the same string is produced if
+  openOutputStream returns null during a template write (SafFsAdapter.kt:177-178,
+  also IOException -> Kind.IO). The instrumentation added by the fix
+  distinguishes these two in one device run.
+
+--------------------------------------------------------------------------------
+RC-2  CONFIRMED BUG
+     A created project and a re-opened project store DIFFERENT URI strings for
+     the SAME folder, so re-opening a project you just created makes a
+     DUPLICATE row.
+--------------------------------------------------------------------------------
+  This is the direct answer to the question "which URI does the Explorer get,
+  and is that same URI persisted and reusable?".
+
+  Create path — ProjectManager.createProject():
+      persistedParent = persistTreeAccess(pickedTreeUri)      // .../tree/primary%3ADocuments
+      projectUri     = createDirectory(persistedParent, name) // returns a FileNode
+      Project(rootUri = projectUri.uri)
+    createDirectory -> queryNodeOrThrow -> SafFsAdapter.kt:253 builds the node
+    URI as documentUriOf(tree, docId) =
+      buildDocumentUriUsingTree(tree, docId), producing a DOCUMENT uri:
+        content://<auth>/tree/primary%3ADocuments/document/primary%3ADocuments%2FAurora
+
+  Open path — ProjectManager.openExistingProject():
+      persisted = persistTreeAccess(pickedTreeUri)            // returns uri.toString()
+    The picker returns a TREE uri with no /document/ segment:
+        content://<auth>/tree/primary%3AAurora
+
+  So projects table holds, for one single folder on disk, potentially:
+        created: .../tree/primary%3ADocuments/document/primary%3ADocuments%2FAurora
+        opened:  .../tree/primary%3AAurora
+  These are different strings. openExistingProject dedupes with
+  projects.findByRootUri(persisted) (ProjectManager.kt:84), which can therefore
+  never match a created project. Result: a second row for the same folder.
+
+  The `Index(value = ["rootUri"], unique = true)` on ProjectEntity does NOT
+  prevent this, because the two strings genuinely differ. No exception is
+  raised; the user just silently ends up with the same project listed twice,
+  and each row opens the same folder.
+
+  Confirmed untested: the 20 ProjectManager tests contain
+  "openExisting is idempotent and does not create a duplicate row"
+  (line 107) but it only covers open-after-open with the same tree URI. There
+  is NO test that creates a project and then opens the same folder. The gap is
+  exactly the bug.
+
+  On "is the stored URI reusable?" — YES, the document URI is usable. Access
+  was persisted on the TREE, and a document URI built from that tree with
+  buildDocumentUriUsingTree inherits the tree grant. The Explorer receiving a
+  document URI is therefore not an access failure. The defect is identity
+  mismatch, not a broken grant.
+
+--------------------------------------------------------------------------------
+RC-3  CONFIRMED BUG
+     createProject() and openExistingProject() do not guard the repository.
+--------------------------------------------------------------------------------
+  ProjectManager.kt:180  projects.upsert(project)
+  ProjectManager.kt:112  projects.upsert(project)
+  ProjectManager.kt:87-88 projects.setLayout / touchOpened
+
+  The repository signals failure by THROWING, not by returning a result — the
+  project file states this and FileManager.recordOpen (FileManager.kt:164-177)
+  guards for it explicitly. createProject does not. A Room failure therefore
+  escapes the withContext block as an exception, never becomes an AppResult, and
+  reaches the UI coroutine as an unhandled throw. In ProjectsScreen the create
+  effect branch sets `busy = true`, calls onCreateProject, and only sets
+  `busy = false` AFTER the call. An exception skips that assignment, so the
+  progress indicator spins forever and no message is ever shown. The owner
+  would see a permanent spinner, not an error — a distinguishable symptom that
+  was NOT reported, which slightly argues against this being the cause of the
+  recorded video, but the defect is real.
+
+--------------------------------------------------------------------------------
+RC-4  CONFIRMED BUG
+     SafFsAdapter has ZERO test coverage; it is the only class that speaks
+     DocumentsContract.
+--------------------------------------------------------------------------------
+  No test file exists under app/src/test for integration/ or data/. The 8 test
+  files cover core/result, core/log, ui/theme, ui/screens and application/ only.
+  Every SAF behaviour — URI construction, treeOf, childDocumentsUri, the
+  read-only fallback, exception mapping — is unverified. This is precisely why
+  RC-1 and RC-2 could sit undetected behind 96 green tests.
+
+--------------------------------------------------------------------------------
+RC-5  ARCHITECTURE/UX — the owner's main complaint
+     SAF is the only browsing surface on the failure path, so the system
+     picker becomes the app's de facto file explorer.
+--------------------------------------------------------------------------------
+  Structurally, requirements 1 and 2 are ALREADY satisfied on the success path:
+
+    - SAF is used for exactly two things: Open Project picks a tree, and Create
+      Project picks a parent tree. Both go through ProjectManager /
+      FileSystemPort. Nothing else touches SAF.
+    - After a successful create or open, the app navigates to the INBUILT
+      ExplorerScreen (NexGNavHost.kt:153-173) and the system picker is never
+      shown again for browsing.
+    - ExplorerScreen (598 lines) already implements the full Phase 2 scope
+      required by point 3: breadcrumbs (Breadcrumbs composable, line 396),
+      directory/file listing via listDirectory, create file, create folder,
+      rename, recent files, and separate loading / empty / error states.
+
+  The defect is the failure path. When createProject returns Failure, the user
+  stays on ProjectsScreen, where the only available actions are the two buttons
+  that open the SAF picker. So a failed create is: SAF picker -> name -> SAF
+  picker -> generic error -> SAF picker -> ...
+
+  That loop is what the video shows, and it is why the picker reads as the
+  app's primary file explorer. The inbuilt Explorer is present and complete but
+  is never reached, so it never gets the chance to be the browsing UI.
+
+  Note on scope: SAF offers no "pick-or-create folder" contract, so the picker
+  will always look like a browser. The remedy is not to replace the picker; it
+  is to make the success path reliable and the failure path actionable so the
+  user is not sent back into it. Faking a folder chooser in-app would be a new
+  feature and is out of scope for this fix.
+
+================================================================================
+3. WHAT THE OWNER SHOULD BE TOLD ABOUT THE PICKER
+================================================================================
+  The SAF tree picker showing a full browsable file tree is correct and
+  unavoidable. PLAN.MD 4.10 / 8.1 put the app on SAF persisted-URI access, and
+  OpenDocumentTree is the only contract that yields a persistable tree grant.
+  Requiring a non-browsable location chooser is not achievable without
+  abandoning SAF or asking for broad storage permission, and the owner has
+  explicitly ruled out the latter (requirement 9) and PLAN.MD rules it out too.
+
+  The actionable complaint is not "the picker is a browser". It is "the picker
+  is where the app keeps sending me because the create flow keeps failing, and
+  the app never tells me why". Fixing RC-1/RC-2/RC-3 makes the inbuilt Explorer
+  the actual browsing UI, which is the architecture the owner asked for.
+
+================================================================================
+4. MINIMAL FIX PROPOSED (to implement next)
+================================================================================
+  F1  Make the failing step observable.  (fixes RC-1 confirmation, RC-4)
+      Add a short, author-controlled, URI-free `step` label to AppError, set it
+      at the SAF and template failure sites, and render it next to describe()
+      in the create/open error surface. Our own messages may embed tree URIs,
+      which is why they are not rendered today; a step label carries the same
+      information with no leakage. Fully JVM-testable.
+
+  F2  Log the actual SAF grant outcome and the created URI.  (fixes RC-1 proof)
+      persistTreeAccess logs whether the WRITE grant was taken or downgraded to
+      read-only. createProject logs the project root URI and each template
+      segment. LogcatSink already exists with tag "NexG/<CATEGORY>", so the
+      owner can read the exact step with one adb logcat command on the next
+      device run. This is what turns RC-1 from a hypothesis into a fact.
+
+  F3  Canonicalise the project root URI to a tree URI.  (fixes RC-2)
+      Build the created project's root with
+      DocumentsContract.buildTreeDocumentUri(tree, documentId) so that a created
+      project and a re-opened project produce the SAME string for the same
+      folder, making findByRootUri dedupe actually work. Manager-level
+      behaviour becomes JVM-testable; the adapter-level URI construction is not
+      JVM-testable without Robolectric, which is out of scope.
+
+  F4  Guard the repository calls in ProjectManager.  (fixes RC-3)
+      Wrap the upsert/setLayout/touchOpened calls so a Room throw becomes an
+      AppResult Failure instead of escaping as an exception that strands the
+      progress indicator. JVM-testable with a throwing fake.
+
+  F5  Regression tests for each of the above.  (fixes RC-4 in part)
+      - create-then-open the same folder yields exactly one project
+      - a step label is present on the IO failures the create path can produce
+      - a repository throw surfaces as Failure, not an exception
+      - the error surface shows the step and not a tree URI
+
+  Explicitly NOT in scope, per the owner's constraints:
+      no delete; no broad storage permission; no Hilt, Gemini, OpenCode, Termux
+      or networking dependency; no change to Room version (stays 2.7.1); no
+      change to the Open Project behaviour, which works.
+
+================================================================================
+5. VERIFICATION STATUS OF THIS DOCUMENT
+================================================================================
+  This is a code-and-evidence diagnosis. It is NOT a device-verified root
+  cause. Specifically:
+
+    PROVEN by reading the source:
+      - the error string is the app's own, produced by AppResult.kt:42
+      - 11 distinct IO sites collapse into that one sentence
+      - the manifest declares zero storage permissions
+      - created vs opened projects store different URI strings (RC-2)
+      - repository calls in ProjectManager are unguarded (RC-3)
+      - SafFsAdapter and the data layer have zero tests (RC-4)
+      - the inbuilt Explorer already implements the full Phase 2 scope (RC-5)
+
+    NOT PROVEN, must be confirmed by one instrumented device run:
+      - that RC-1 (silent read-only downgrade) is the specific step that failed
+        in the recorded video
+      - whether the actual failure was instead a template write rejection
+      - whether persisted URI access survives a process restart on the owner's
+        device, which is untested and is the one behaviour a JVM fake cannot
+        model at all
+
+  No claim of PASS is made. Unit tests cannot settle this section, and the
+  owner asked specifically not to be given one on that basis.
+
+================================================================================
+END OF DIAGNOSIS
+================================================================================
+
+================================================================================
+6. IMPLEMENTATION OUTCOME (added after the diagnosis above was written)
+================================================================================
+  Minimal fix applied. F1, F2, F4 and F5 are implemented. F3 is DEFERRED
+  deliberately, and no claim of PASS is made.
+
+  IMPLEMENTED
+  ----------
+  F1  AppError.step (AppResult.kt)
+      New optional field plus AppError.describeWithStep(). The step is a
+      URI-free literal, so Projects/Explorer/MissingProject now show which step
+      failed instead of one sentence for eleven different failures.
+      New: AppResultTest / ProjectManagerTest cover the null, blank and
+      URI-free cases.
+
+  F2  SafFsAdapter observability
+      persistTreeAccess now records whether the READ+WRITE grant was granted or
+      refused (read-only fallback), and logs both outcomes. Every adapter
+      failure site carries a step literal. The writeTemplate failure log now
+      includes the step. The created project root URI is logged.
+
+  F4  ProjectManager repository guards
+      getById, findByRootUri, upsert, setLayout and touchOpened are wrapped.
+      A Room throw now becomes an AppResult.Failure naming the step instead of
+      escaping as a raw exception that killed the coroutine and left the screen
+      spinning. CancellationException is deliberately rethrown so cancellation
+      is not converted into a failure result.
+      New: FakeProjectRepository.fail(op, error) injects repository faults; five
+      new tests cover create / open / re-open / lookup / refreshLayout.
+
+  EVIDENCE
+  --------
+    :app:assembleDebug          BUILD SUCCESSFUL
+    :app:testDebugUnitTest      106 tests, 0 failures, 0 errors, 0 skipped
+                                 (was 96 before this fix; +10 new)
+    git diff --check            clean
+    Manifest                    INTERNET only, unchanged; no storage
+                                permission added
+    Mutation check              Re-introducing the unguarded createProject
+                                 upsert makes exactly 2 tests fail
+                                 ("createProject reports a repository write
+                                 failure instead of throwing", "a failure step
+                                 identifies the failing step and never leaks a
+                                 uri"), confirming the guards are load-bearing.
+
+  DEFERRED — F3 (canonical project tree URI)
+  -----------------------------------------
+  Confirmed real (RC-2): a created project stores the child document URI from
+  createDocument, while a re-opened project stores the picked tree URI, so the
+  same folder can produce two Room rows. NOT fixed in this pass, on purpose:
+
+    - The fix changes the URI shape the app hands to SAF everywhere, which can
+      only be validated on a real document provider. The owner asked not to
+      declare PASS from unit tests, so shipping an unverifiable URI change
+      together with a real device bug would risk making the reported symptom
+      worse while claiming to fix it.
+    - The alternatives are a schema change on a unique index
+      (rootUri), which is a migration on a database created with
+      exportSchema = false, or pure-Kotlin document-id matching, which cannot
+      reach the indexed column without the same migration.
+
+  It is a real defect and is not closed. It needs its own decision plus a
+  device run, separate from RC-1.
+
+  STILL UNPROVEN
+  -------------
+  RC-1 remains a hypothesis, and this fix deliberately does not assume it. The
+  point of F1/F2 is that one device run will now settle it: the log line
+  "Persisted READ+WRITE grant ..." or "WRITE grant REFUSED ..." identifies the
+  grant, and the on-screen step identifies the failing operation. If the step
+  reads "creating the project folder" or "writing a file" while the grant line
+  says REFUSED, RC-1 is confirmed.
+
+  OWNER MANUAL TEST
+  -----------------
+    APK: /sdcard/Download/NexG-IDE-0.1.0-phase2-storagefix-debug.apk
+    size 17122707
+    md5    2674d21d6d60a2c22eff8ee025238692
+    sha256 e362e50e1af8dd1e620fbd4a09548c1fe295fc0beea95d72b16fb96843715f1e
+
+  What to look for:
+    1. New Project, pick a folder, confirm the name, and note the exact
+       on-screen text on failure. It should now end in "(at <step>)".
+    2. If it still fails, capture logcat for the "Persisted READ+WRITE grant" /
+       "WRITE grant REFUSED" lines and the "Template ... incomplete" warning.
+    3. On success, confirm the inbuilt Explorer opens and lists the project.
+    4. Re-open the same folder and report whether a duplicate project row
+       appears (RC-2, expected to still reproduce).

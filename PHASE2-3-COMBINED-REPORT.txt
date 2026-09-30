@@ -1,0 +1,592 @@
+NEXG IDE — PHASE 2 + PHASE 3 COMBINED REPORT
+Generated after: unit tests (--rerun-tasks), assembleDebug, aapt2 badging
+Repo state: working tree modified, nothing committed (device verification pending)
+
+========================================================================
+1. WHAT IS IN THIS BUILD
+========================================================================
+
+Phase 2 — project creation, SAF, Explorer  (COMPLETE, device re-verify pending)
+  New Project -> name -> SAF parent folder -> create -> in-app Explorer.
+  No system picker as the project browser, no external editor.
+
+Phase 3 — in-app code editor  (PARTIAL — see section 11, device bugs open)
+  Tap a source file in the Explorer -> internal Editor route -> real buffer.
+  The file OPENS and highlighting WORKS on the device. The text
+  INTERACTION layer does not.
+
+  Seven language definitions, all data-driven:
+    Kotlin, Java, XML, Gradle (.gradle/.gradle.kts), JSON, Markdown, Shell
+
+  Editor features:
+    - Editable CodeSurface: BasicTextField + line-number gutter
+    - Syntax highlighting (cached per text; not per keystroke)
+    - Caret / selection: INTENDED to come from the text field itself.
+      ON DEVICE THIS DOES NOT WORK — see section 11. A claim that a
+      capability is "provided by the text field" is a claim about
+      Compose, not about this app, and it was never tested.
+    - Undo / redo, bounded to 100 entries
+    - Auto-indent on Enter, driven by the last real code character
+    - Bracket auto-close, and step-over of an existing closer
+    - Tabs, with an unsaved dot and a read-only badge
+    - Find / find-next / find-previous, with match-case and whole-word
+    - Replace current and replace all, with a replacement count
+    - Go to line
+    - Read-only above 2 MB, checked BEFORE the file is read
+    - Completion interface only (keywords, types, document identifiers)
+
+========================================================================
+2. PHASE 2 BUGS FOUND AND FIXED
+========================================================================
+
+(a) SAF URI arithmetic was wrong for tree-based document URIs.
+    DocumentsContract.isTreeUri() returns true for
+    "…/tree/T/document/D" as well as "…/tree/T". The old treeOf()/
+    documentIdOf() took the getTreeDocumentId() branch for both, so every
+    template operation was addressed at the PARENT tree T while the caller
+    believed it was writing inside the project folder.
+    That is the mechanism behind "the project folder exists but the files are
+    not in it". createProject still returned Success.
+    Fix: a pure-Kotlin SafUri with explicit traversal-safe arithmetic.
+    storedRootUri is a traversal-safe tree-based document URI; the persisted
+    grant prefix is preserved. Folder identity is compared by decoded
+    document id, so a project picked as a bare tree URI and the same folder
+    read back as a document URI are one project, not two.
+
+(b) The template wrote to the wrong path.
+    "com.nexg.template/MainActivity.kt" was one directory literally named
+    "com.nexg.template". The required path is com/nexg/template.
+    Fix: PACKAGE_PATH, and the path is built from it.
+
+(c) res/ was never created.
+    The derived directory list omitted it while the template listed
+    app/src/main/res/values/strings.xml as required.
+    Fix: res and res/values are created explicitly.
+
+(d) Duplicate project rows.
+    A created project is stored as a document URI; the same folder re-picked
+    comes back as a bare tree URI. Comparing strings made one folder two rows.
+    Fix: findKnown() matches on exact URI, then on decoded folder identity.
+    No schema migration was added.
+
+========================================================================
+3. TEST-FAKE BUGS FOUND (these made tests pass for the wrong reason)
+========================================================================
+
+(a) FakeFileSystem.addNode() did not index a node into its parent's child
+    list unless the parent was passed explicitly, while seedPath() never
+    passed it. A seeded node was therefore invisible to listDirectory() and
+    findChild() but still blocked a create — a state no real SAF provider
+    can be in.
+
+(b) FakeFileSystem rejected duplicates by comparing generated URIs. A
+    directory and a file of the same name encode differently
+    ("/document/x" vs "/document/file:x"), so a folder and a file named
+    "MyApp" could coexist. Real providers reject on display name.
+
+(c) FakeFileSystem returned failures with no step. SafFsAdapter sets a step
+    on every failure, and the step is what the Projects and Explorer screens
+    render, so a stepless fake made the step contract untestable.
+
+========================================================================
+4. PRODUCT BUGS FOUND BY THE NEW TESTS
+========================================================================
+
+(a) EditorTokenizer never closed a triple-quoted Kotlin string.
+    A string spanning lines stayed open past its closing delimiter, so
+    everything after it was highlighted as a string.
+
+(b) Auto-indent added TWO levels after a bare "if (x) {".
+    The body sits one level in from the opener and the closing brace returns
+    to the opener's own level. Two levels was wrong.
+
+(c) Auto-indent and auto-close looked at the last CHARACTER, not the last
+    real code character, so 'println("{")' and '// opens {' indented and
+    auto-closed for no reason. Strings and comments are now skipped.
+
+(d) The typed character was read from the pre-edit text.
+    EditorTextEdits derived "what did the user type" from the text BEFORE the
+    insertion, where the inserted character does not exist yet, so no newline
+    was ever detected and auto-indent and auto-close never ran at all.
+
+(e) EditorLogic had no way to say "insert this closer".
+    The only function available answered "is the closer already there",
+    which is the step-over gesture, so auto-close had nothing to insert.
+
+(f) The AAPT2 version in the Gradle cache is a host binary and cannot be
+    executed here. The Termux aapt2 was used for badging instead; both
+    agree on package, SDK levels and the launchable activity.
+
+========================================================================
+5. REPLACED PLACEHOLDER
+========================================================================
+
+ProjectTemplateTreeTest had a test named
+  "a failure is reported when a template directory is occupied by a file"
+whose body only performed a successful create and asserted the project name.
+It asserted nothing about the failure it was named for. It is now two real
+tests:
+  - the project folder name is taken by a file  (reachable via createProject)
+  - a template directory is occupied by a file  (reachable when a project
+    folder is reused; writeTemplate is now internal so the branch is testable)
+
+========================================================================
+6. GATES RUN
+========================================================================
+
+  sh gradlew :app:testDebugUnitTest --rerun-tasks
+      324 tests, 0 failures, 0 errors, 0 skipped        BUILD SUCCESSFUL
+      (308 before the device bug was fixed, +16 for it)
+
+  sh gradlew :app:assembleDebug                        BUILD SUCCESSFUL
+
+  aapt2 dump badging
+      package: name='com.nexg.ide' versionCode='1'
+               versionName='0.1.0-phase2-3'
+      minSdkVersion:'26'  targetSdkVersion:'36'  compileSdkVersion:'36'
+      launchable-activity: name='com.nexg.ide.MainActivity' label='NexG IDE'
+
+  git diff --check                                     clean
+
+APK  /sdcard/Download/NexG-IDE-0.1.0-phase2-3-debug.apk
+     17,332,108 bytes
+     md5    01df71c3804631646d495771deef6664
+     sha256 fd8ab6cea3d20f8ee7f3d2421d9b270a31551756ffc7cdb866ff18e333e15c8a
+
+Previous APKs kept, not deleted:
+  NexG-IDE-0.1.0-phase1-debug.apk
+  NexG-IDE-0.1.0-phase2-debug.apk
+  NexG-IDE-0.1.0-phase2-createfix-debug.apk
+  NexG-IDE-0.1.0-phase2-storagefix-debug.apk
+
+========================================================================
+7. VERSION MATRIX — UNCHANGED
+========================================================================
+
+  JDK 21 toolchain, JVM target 17
+  compileSdk 36, targetSdk 36, minSdk 26
+  AGP 8.9.2, Gradle 8.13, Kotlin 2.1.0
+  Compose BOM 2025.01.00, Room 2.7.1, navigation 2.8.5
+  aapt2 override and low-RAM settings unchanged; no memory increase
+  Builds run with "sh gradlew" only.
+
+  Dependencies added by Phase 2: Room runtime/ktx/compiler/testing + KSP.
+  Dependencies added by Phase 3: NONE.
+    The editor uses androidx.lifecycle.viewmodel.compose, which was already
+    declared, and Compose foundation, which was already declared.
+
+  versionName moved 0.1.0-phase2 -> 0.1.0-phase2-3 so the badging dump
+  describes the build that is actually in the APK.
+
+========================================================================
+8. KNOWN LIMITATIONS — stated, not hidden
+========================================================================
+
+  - NOT VERIFIED ON A DEVICE. No ADB device is reachable from this
+    environment. Every claim above is a JVM test or a build result. The
+    SAF behaviour in particular can only be confirmed by the owner.
+
+  - Large-file limit is 2 MB, a judgement call, not a measured threshold.
+    The size is read before the content, so an oversized file is never
+    loaded in order to be refused. The check falls back to the text length
+    when a provider reports no size.
+
+  - Highlighting is a whole-document tokenization, cached against the exact
+    text. It is not incremental. Fine at these sizes; a very large file
+    would be slow to highlight.
+
+  - Completion is the interface PLAN.MD asked for, not a language server:
+    keywords, types and identifiers from the open document, capped at 40.
+    No network, no AI, no LSP client.
+
+  - Closing a dirty tab is REFUSED ("save it first") rather than prompting.
+    Destructive operations and their confirmation belong to Phase 7.
+
+  - The binary Gradle wrapper JAR cannot be created through SAF. It is not
+    faked. A project generated on the device therefore has gradle/wrapper
+    recognized by the layout probe but no wrapper JAR, and cannot run
+    ./gradlew until the JAR is provided.
+
+  - The INTERNET permission remains in the manifest. It is declared in Phase
+    1 for the planned Gemini integration. No code in this build makes a
+    network call.
+
+========================================================================
+9. THE DEVICE BUG — full mechanism, and the fix
+========================================================================
+
+Verified against navigation-common 2.8.5 bytecode rather than assumed:
+  NavType$StringType.serializeAsValue -> Uri.encode
+  NavType$StringType.parseValue       -> IDENTITY (no decode)
+  the decode lives in NavDeepLink's argument extraction
+
+So: path() encodes once, Navigation decodes once, and editorArgsOf
+decoded a THIRD time. Encoding is not idempotent in reverse.
+
+Two traps, both pinned by tests:
+
+  * The corrupted URI's DOCUMENT id is still correct, because
+    getDocumentId rejoins every segment after the "document" marker.
+    The URI is self-inconsistent: this app's id, Android's tree id and
+    the app's grant all disagree, and the error named a permission
+    rather than a bug.
+
+  * SafUri was MORE TOLERANT than the platform. It read the tree id
+    with substringBefore("/document/") and got the intended value back
+    for a URI that no longer encoded it, which is exactly why the app
+    forwarded a URI the provider was going to reject.
+
+Fix (small, and inside the existing architecture):
+  1. editorArgsOf no longer decodes. Both values pass through
+     verbatim; the framework already did the one decode.
+  2. SafUri.isTreeBasedDocumentUri — the sharp question, not the vague
+     one: do ANDROID's parser and OURS agree? SafUri gained pure models
+     of the platform rules (platformPathSegments,
+     platformTreeDocumentIdOf, platformDocumentIdOf). Split-then-decode
+     order is the whole difference between them.
+  3. EditorManager.open refuses a malformed URI before it reaches the
+     provider, as UNSUPPORTED + STEP_OPEN.
+
+  NOT changed: the persisted grant, any permission, any manifest entry,
+  the SAF provider, or any direct filesystem path. Nothing bypasses
+  SAF. This declines to address a malformed URI, nothing more.
+
+  The error assertion was not weakened, it was sharpened. A genuine
+  SecurityException still surfaces as Kind.SECURITY at step
+  "reading a file", and there is a test that says so. What changed is
+  that a corrupt URI no longer masquerades as a missing permission —
+  which mattered, because a user cannot fix a bug and a user can fix a
+  grant.
+
+Two further latent bugs of the same family, found and fixed:
+  * percentDecode was not UTF-8. It decoded byte-by-byte into chars
+    while Uri.decode reassembles UTF-8 bytes, so "caf%C3%A9.kt" came
+    back as "caf\u00C3\u00A9.kt" — a plausible-looking id naming a
+    different document. Real impact: any create/rename/lookup under a
+    non-ASCII folder addressed the wrong document and said nothing
+    about why. Now strict UTF-8, with a byte-wise fallback so a mangled
+    id stays visible instead of turning into replacement characters.
+  * percentEncode added, UTF-8 bytes, so a canonical SAF URI can be
+    built in pure Kotlin and the round trip is testable.
+
+A NOTE ON THE TEST, because it is the part worth reading:
+  The first version of the regression test passed against BOTH the bug
+  and the fix. NavRoutes uses android.net.Uri and android.os.Bundle,
+  neither of which exists in a plain JVM test, so the test had modelled
+  the route locally and was effectively testing its own model — the
+  same false confidence as the Phase 2 placeholder test.
+  The route is now pure (path() uses SafUri.percentEncode, and
+  editorArgsOf delegates to the pure editorFileFromArguments), and the
+  test calls exactly what the app calls. Confirmed by mutation:
+    re-adding the extra decode      -> 2 tests FAILED
+    removing the malformed guard    -> 2 tests FAILED
+
+  One test fixture was also wrong in a way that would have let the
+  device stay broken: "primary%3AProjects" has no "/" in it, so it
+  survives an extra decode unharmed (a literal ":" is harmless in a
+  path segment). The real device shape is "primary:Documents/MyApp".
+  The fixture now uses that, and says why in a comment.
+
+========================================================================
+10. OWNER DEVICE CHECKLIST — RETEST
+========================================================================
+
+  [ ] Install NexG-IDE-0.1.0-phase2-3-debug.apk over the previous build
+      md5 01df71c3804631646d495771deef6664
+
+  THE RETEST THAT MATTERS — this is the step the previous APK failed:
+
+  [ ] Open the existing project (no need to create a new one)
+  [ ] Navigate Explorer -> app -> src -> main -> java -> com -> nexg
+        -> template
+  [ ] Tap MainActivity.kt
+  [ ] IT MUST OPEN AND SHOW THE KOTLIN SOURCE
+        Previous APK: "No file is open" + "Permission or credential
+        problem (at reading a file)"
+        If it still says permission, STOP and send that exact text —
+        it would mean a different failing step than the one fixed here.
+  [ ] If you see instead "The file reference for ... is malformed",
+        that is a DIFFERENT and better error: it means a URI is
+        malformed upstream of the editor, and the exact string is
+        needed. Either way, do not describe it as "still a permission
+        problem".
+  [ ] Type in the file -> unsaved dot appears
+  [ ] Save -> dot clears
+  [ ] Close the tab, reopen the file -> still editable
+
+  THEN, from scratch:
+
+  [ ] Home -> New Project
+  [ ] Enter a name, pick a parent folder with the SAF picker
+  [ ] THE KEY PHASE 2 CHECK: does the project folder now contain
+        README.md
+        build.gradle
+        settings.gradle
+        gradle.properties
+        app/build.gradle
+        app/src/main/AndroidManifest.xml
+        app/src/main/java/com/nexg/template/MainActivity.kt
+        app/src/main/res/values/strings.xml
+      If the folder is there but empty, it is still the URI bug and the
+      steps below will name where it failed.
+  [ ] Explorer: create folder, rename, navigate into it
+  [ ] Re-open the same folder from Projects: NO duplicate row
+  [ ] Tap MainActivity.kt -> the editor opens THAT file
+  [ ] Type: indentation after "fun f() {" is 4 spaces, not 8
+  [ ] Type "(" at the end of a line -> "()" appears
+  [ ] Type "(" in front of ")" -> it steps over, does not double
+  [ ] Open find, search "val", next/previous cycle and wrap
+  [ ] Replace all, and confirm the reported count
+  [ ] Go to line
+  [ ] Make an edit -> the tab shows the unsaved dot
+  [ ] Save -> the dot clears
+  [ ] Open a second file -> two tabs, switch between them
+  [ ] Close a tab with unsaved changes -> refused, edit intact
+  [ ] Open a file over 2 MB -> read-only banner, no content loaded
+
+  Logcat filter: adb logcat -s NexGApp
+
+========================================================================
+11. PHASE 3 EDITOR INTERACTION BUGS — DIAGNOSED, NOT YET FIXED
+========================================================================
+
+Device report (this APK, md5 01df71c3804631646d495771deef6664):
+
+  A. Typing / editing does not work reliably
+  B. Text selection does not work
+  C. Context menu shows Paste and Select all, but Copy is MISSING
+  D. Select All appears in the menu but does not select the document
+  E. Caret / cursor positioning and editing interaction
+  F. Existing paste must keep working
+  G. Save works and must not regress
+  H. Edit -> Save -> Close -> Reopen must preserve the content
+
+STATUS: no code has been written for any of these. Nothing below is
+fixed. This section is the diagnosis, produced by reading the actual
+implementation — CodeSurface -> EditorViewModel -> EditorBuffer — and
+it is recorded here so the fix can be checked against a cause rather
+than against a symptom.
+
+FOUR DISTINCT DEFECTS. C and D are not two bugs; they are one.
+
+----------------------------------------------------------------------
+DEFECT 1 — the selection never reaches the buffer  (causes B, C, D, E)
+----------------------------------------------------------------------
+Two separate early returns drop it:
+
+  EditorViewModel.onEdit:
+      val kept = EditorTextEdits.apply(...)
+      if (kept == before) return          <-- selection-only edit returns here
+
+  EditorBuffer.edit:
+      if (readOnly || updated == text) return this   <-- text unchanged, so
+                                                            the selection is
+                                                            never stored
+
+A selection change does not alter the text, so it is discarded twice.
+
+WHY C AND D FOLLOW FROM THIS, EXACTLY:
+
+  Compose builds the text toolbar from the field's CURRENT selection,
+  and it shows Copy only when that selection is non-empty:
+
+      cut/copy  -> only if selection is not collapsed
+      paste     -> depends on the clipboard
+      selectAll -> depends on the selection not already covering the text
+
+  Because the selection was always reported empty:
+      Copy          -> never rendered   (device symptom C)
+      Paste         -> still rendered   (matches the device)
+      Select All    -> still rendered   (matches the device)
+
+  And Select All then did nothing, because the field's own selection was
+  overwritten by the parent's stale one on the next recomposition
+  (device symptom D).
+
+  So "Copy is missing" was never a missing Copy action. It was the
+  toolbar honestly reporting that the app had no selection to copy.
+
+----------------------------------------------------------------------
+DEFECT 2 — scroll modifiers on the text field itself  (causes A, B, E)
+----------------------------------------------------------------------
+CodeSurface puts .verticalScroll() and .horizontalScroll() directly on
+the BasicTextField, while BasicTextField already scrolls internally.
+
+  A parent scrollable consumes drags before the text field sees them, so:
+      - long-press to select a word does not reliably start a selection
+      - the drag handles do not drag
+      - the field's internal scroll never advances, so the caret-follows-
+        caret behaviour is driven by the outer scroll instead
+
+  That is the "typing is unreliable" symptom: text goes in, but the
+  caret and the visible window drift out of step.
+
+  Compounding it: ONE horizontalScroll ScrollState instance is attached
+  to BOTH the gutter and the field (CodeSurface lines 94 and 115). A
+  single ScrollState on two independent scrollables fights itself.
+
+  The syntax highlighting transformation is NOT at fault — it is a
+  correct identity offset mapping that only adds colour, so it cannot
+  displace a caret. Checked, and clean.
+
+----------------------------------------------------------------------
+DEFECT 3 — the edit-offset derivation  (contributes to A, E)
+----------------------------------------------------------------------
+EditorViewModel.onEdit:
+      val from = before.length - (text.length - caret)
+
+This infers where the edit happened by differencing two lengths. It
+happens to be right for a single typed character and wrong for an IME
+composition or a multi-character paste, where the inserted region is not
+one character. A wrong `from` means auto-indent and auto-close are
+applied at the wrong offset, which the user sees as the editor fighting
+the keyboard.
+
+----------------------------------------------------------------------
+DEFECT 4 — no focus request  (contributes to E)
+----------------------------------------------------------------------
+EditorScreen has no FocusRequester and never requests focus, so on
+open the field is not focused and the IME is not raised reliably. The
+user has to guess where to tap before anything works.
+
+WHAT IS KNOWN TO BE WORKING ON DEVICE
+  - The file opens (the section 9 URI fix held)
+  - Syntax highlighting renders
+  - Save works
+
+SO THE FIX MUST NOT REGRESS SAVE, PASTE, UNDO/REDO, TABS, DIRTY, GUTTER
+OR HIGHLIGHTING. The fix is in the interaction layer, not a rewrite.
+
+FIX PLAN (not yet implemented):
+  1. EditorBuffer: a selection-only path that does not require the text
+     to change, so a selection is storable. edit() keeps its own guard.
+  2. EditorViewModel.onEdit: handle "text changed" and "only the
+     selection moved" as two different cases; run the auto-indent and
+     auto-close rules only when text really changed.
+  3. CodeSurface: remove the scroll modifiers from the field and let
+     BasicTextField own its scrolling; give the gutter its own scroll
+     state, or sync it to the field's; round-trip the selection as a
+     controlled value.
+  4. EditorScreen: FocusRequester, focus on open, IME raised.
+  5. Replace the length-differencing offset derivation with a real
+     before/after diff, so composition and paste are handled.
+  6. Regression tests for the pure parts: selection round-trip, select
+     all, delete, paste, the offset derivation, and
+     edit -> save -> close -> reopen preserving content.
+
+WHAT THE TESTS COULD NOT HAVE CAUGHT, AND WHY
+  Every existing editor test calls plain functions. None of them
+  instantiated a text field, so none of them could see that the
+  selection was being dropped on the way in, and the Compose toolbar
+  behaviour (Copy hidden) is not reachable from a JVM test at all. The
+  UI portion of this fix is therefore device-verifiable ONLY. That is
+  the honest limitation, and it is why the device retest is not
+  optional.
+
+========================================================================
+12. PHASE 4 — AUDIT AND PLAN ONLY, NOTHING IMPLEMENTED
+========================================================================
+
+PLAN.MD is the source of truth. Phase 4 per PLAN.MD section 8:
+
+  "Ports + GeminiBackend (streaming, health) + BYOK key screen"
+  gate: "green + backend tests (mock server)"
+
+INVENTORY — what already exists:
+
+  PRESENT AND USABLE
+    core/log/SecretRedactor — already redacts named assignments,
+      bearer tokens, AIza-shaped keys, prefixed keys (sk-/gsk_/...) and
+      credentials in query parameters. Phase 4 builds on this rather
+      than inventing a second redaction path.
+    core/result/AppResult, core/dispatch/DispatcherProvider — the
+      error and threading conventions Phase 4 must follow.
+    The AiBackend interface signature itself, quoted verbatim from
+      PLAN.MD 4.9.
+
+  ABSENT
+    domain/port/AiBackend, domain/model/AIMessage — do not exist
+    integration/gemini/ — does not exist
+    data/local/ — the whole directory is absent
+      (SettingsDataStore, SecurePrefs)
+    Any credential storage
+    Any developer-tool / CLI port
+    A mock server for the Phase 4 gate
+
+  PRESENT BUT SCAFFOLD ONLY, and honest about it
+    AiScreen and SettingsScreen are Phase 1 placeholders. Both carry
+    comments saying no key is requested or stored. They must be
+    replaced by real Phase 4 screens, not merely relabelled.
+
+DEPENDENCIES PLANNED — all three are listed in PLAN.MD 7.3, so none is
+an unrelated addition, and all three were confirmed resolvable from
+this environment before planning (HTTP 200):
+
+    okhttp 4.12.0                        Gemini SSE transport
+    androidx.security:security-crypto     EncryptedSharedPreferences
+    kotlinx-serialization-json 1.7.3     request/response models
+    (+ its Kotlin 2.1.0 compiler plugin)
+
+Note: none of the three is currently in the local Gradle cache, so
+the first build will download them.
+
+  security-crypto is the awkward one: its newest release line is 1.1.0
+  and EncryptedSharedPreferences is on a deprecation path. PLAN.MD 7.3
+  names it explicitly, so it is in scope, but this is flagged rather
+  than silently adopted.
+
+ARCHITECTURE FOR THE NEW CODE
+
+  domain/ (PURE KOTLIN, no Android, no networking)
+      port/AiBackend          id, requiresNetwork, health(), complete()
+      port/CredentialStore    save/has/key/clear — the port never knows
+                              about EncryptedSharedPreferences
+      port/DeveloperToolPort  acli boundary, with an explicit
+                              "unavailable" outcome
+      model/                  AiRequest, AiMessage, AiEvent,
+                              BackendHealth
+
+  integration/
+      gemini/GeminiBackend    okhttp + SSE parsing + timeouts
+      gemini/PromptBuilder    context assembly, separate from transport
+      atlassian/AtlassianCliAdapter   implements DeveloperToolPort
+
+  data/local/SecurePrefs      EncryptedSharedPreferences
+
+RULES PHASE 4 MUST NOT BREAK
+  - No API key, bearer token or Authorization header in source or logs.
+    The key travels in a header, not a query parameter, because query
+    strings reach proxy logs and crash reports.
+  - No Gemini networking inside domain or application business logic.
+  - No acli binary inside the APK. Atlassian is a developer-tool concern
+    behind DeveloperToolPort and must not be mixed into the Gemini
+    backend. The adapter reports unavailability gracefully, since
+    executing an external CLI belongs to the Phase 8 Termux layer.
+  - AI must not stand in for normal editor editing.
+
+========================================================================
+13. WHERE THINGS ACTUALLY STAND
+========================================================================
+
+DONE AND VERIFIED BY A REAL COMMAND
+  :app:testDebugUnitTest --rerun-tasks   324 tests, 0 failures,
+                                         0 errors, 0 skipped
+  :app:assembleDebug                     BUILD SUCCESSFUL
+  git diff --check                       clean
+  aapt2 badging                          com.nexg.ide / 1 / 0.1.0-phase2-3
+  APK                                    17,332,108 bytes
+                                         md5 01df71c3804631646d495771deef6664
+                                         sha256 fd8ab6cea3d20f8ee7f3d2421d9b270
+                                                 a31551756ffc7cdb866ff18e333e15c8a
+
+DONE BUT DEVICE-UNVERIFIED
+  The section 9 URI fix. Mechanism traced to bytecode, reproduced in a
+  pure model, pinned by mutation-tested regressions — and still
+  unproven on the device it was found on.
+
+NOT DONE
+  All of section 11. The editor does not yet type, select or copy.
+  All of section 12. Phase 4 has not been started.
+
+COMMIT: still on hold, and awaiting owner approval. Nothing has been
+committed in this phase.

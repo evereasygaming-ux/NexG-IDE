@@ -1,0 +1,32 @@
+/* Nexus editor page styles. CodeMirror's own layout/theme styles are injected
+   by the @codemirror/view base theme at runtime; this file only shapes the
+   page around the editor and normalizes mobile touch defaults. */
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  background: #05060a;
+}
+
+#editor {
+  height: 100%;
+}
+
+.cm-editor {
+  height: 100%;
+}
+
+.cm-scroller {
+  font-family: monospace;
+  line-height: 1.55;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* No double-tap zoom on the code area, and no tap highlight flash. */
+* {
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}

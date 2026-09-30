@@ -28,6 +28,24 @@ data class AppError(
     val kind: Kind,
     val message: String,
     val cause: Throwable? = null,
+    /**
+     * Short, author-controlled label naming the step that failed, or `null`.
+     *
+     * [describe] alone is not enough to debug with. Phase 2 measured this the
+     * hard way: ELEVEN distinct `Kind.IO` failure sites all rendered as the one
+     * sentence "Could not read or write local storage", so a failed project
+     * creation was undiagnosable from the UI and the failing step had to be
+     * guessed. [message] cannot simply be shown instead, because several of
+     * ours embed a document tree URI and the UI is documented as never
+     * rendering those.
+     *
+     * So the step is a separate field: enough to identify where the failure
+     * came from ("writing settings.gradle.kts", "taking the folder write
+     * grant"), short enough to put on screen, and containing nothing but a
+     * literal this codebase chose. Never a URI, never a user string, never
+     * part of an exception message.
+     */
+    val step: String? = null,
 ) {
     enum class Kind {
         IO,
@@ -46,6 +64,19 @@ data class AppError(
         Kind.UNSUPPORTED -> "Not supported on this device"
         Kind.UNKNOWN -> "Something went wrong"
     }
+
+    /**
+     * The user-facing phrase plus the failing step, when one is known.
+     *
+     * This is what the create/open and Explorer error surfaces show, because
+     * [describe] on its own cannot tell a refused directory creation apart from
+     * a failed file write — they are both `Kind.IO` and they render identically.
+     * [step] is safe to show precisely because it is a literal this codebase
+     * writes, not a URI and not a provider exception string; [message] is still
+     * never rendered.
+     */
+    fun describeWithStep(): String =
+        if (step.isNullOrBlank()) describe() else "${describe()} (at $step)"
 }
 
 inline fun <T, R> AppResult<T>.map(transform: (T) -> R): AppResult<R> = when (this) {
