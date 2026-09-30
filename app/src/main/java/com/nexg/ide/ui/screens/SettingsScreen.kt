@@ -26,13 +26,13 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -73,7 +73,13 @@ fun SettingsScreen(
     val state by viewModel.state.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
 
-    var draftKey by rememberSaveable { mutableStateOf("") }
+    // Deliberately `remember`, not `rememberSaveable`. A saveable holder
+    // serialises into the Activity's saved-instance-state bundle, which the
+    // system may persist to disk, so an unsaved plaintext key typed here would
+    // outlive the process outside the Keystore-backed CredentialStore. The
+    // draft is cleared on save, so losing it across a config change costs the
+    // user nothing. Never change this back to `rememberSaveable`.
+    var draftKey by remember { mutableStateOf("") }
     var toolHealth by remember { mutableStateOf<DeveloperToolHealth?>(null) }
 
     LaunchedEffect(developerTools) {
@@ -158,6 +164,11 @@ fun SettingsScreen(
                         label = { Text(stringResource(R.string.settings_ai_key_label)) },
                         placeholder = { Text(stringResource(R.string.settings_ai_key_hint)) },
                         singleLine = true,
+                        // Masks the field so the key is not left on screen, in a
+                        // screenshot or in a screen recording. This is purely a
+                        // visual transform: `value`/`onValueChange` are untouched,
+                        // so typing, pasting and selection behave as before.
+                        visualTransformation = PasswordVisualTransformation(),
                         modifier = Modifier.fillMaxWidth(),
                     )
                     Text(
